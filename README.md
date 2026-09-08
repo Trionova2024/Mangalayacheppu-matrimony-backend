@@ -201,9 +201,9 @@ JWT_EXPIRES_IN="7d"
 PORT=4000
 NODE_ENV=production
 
-ADMIN_EMAIL="admin@matrimony.com"
-ADMIN_PASSWORD="Admin@123"
-ADMIN_NAME="Super Admin"
+ADMIN_EMAIL=""
+ADMIN_PASSWORD=""
+ADMIN_NAME=""
 
 RAZORPAY_KEY_ID="rzp_live_xxxxxxxxxxxx"
 RAZORPAY_KEY_SECRET="xxxxxxxxxxxxxxxxxxxxxxxx"
