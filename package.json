@@ -1,0 +1,28 @@
+{
+  "name": "matrimony-backend",
+  "version": "2.0.0",
+  "description": "Matrimony Admin + Flutter Backend API",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "db:migrate": "npx prisma migrate deploy",
+    "db:generate": "npx prisma generate",
+    "db:push": "npx prisma db push",
+    "test": "node test/tests/test_backend_fixes.js && node test/tests/test_all_requirements.js && node test/tests/test_part2.js && node test/tests/test_issue13.js && node test/tests/test_inactive_profiles.js && node test/tests/test_be09_be26.js && node test/tests/test_qa_28_issues.js && node test/tests/test_free_offer_concurrency.js && node test/tests/test_master_audit.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.14.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "firebase-admin": "^12.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4",
+    "prisma": "^5.14.0"
+  }
+}

@@ -1,0 +1,3247 @@
+{
+  "info": {
+    "_postman_id": "matrimony-backend-qa-collection-v2-1",
+    "name": "matrimony-backend-qa",
+    "description": "Production-ready Postman collection verifying QA backend fixes for matrimony-backend-v2.\n\nBase URL: {{baseUrl}}\nDefault: http://localhost:4000\n\nSafety Notice: Several requests in this collection modify user state (e.g. profile update, swipe, payment, notifications). Run these tests with a dedicated test user account. Do not reset the database or truncate tables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 - Authentication",
+      "description": "Authentication flows, OTP verification, token structure validation (Issue #13 fix), and authorization negative tests.",
+      "item": [
+        {
+          "name": "01. Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Verifies backend API server availability."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Health status is ok', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.status).to.eql('ok');",
+                  "    pm.expect(jsonData.timestamp).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Sign Up / Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Registers a new QA test user with mobile {{signupMobile}} and name 'QA Test User'. Server creates user with defaultCredits (3), status PENDING, and auto-creates ProfileApproval.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mobile\": \"{{signupMobile}}\",\n  \"name\": \"QA Test User\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Sign up successful and OTP sent', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.message).to.match(/OTP/i);",
+                  "});",
+                  "// Chain registered mobile to mobile variable for subsequent Login/OTP requests",
+                  "var mobileVal = pm.environment.get('signupMobile') || '9876543299';",
+                  "pm.environment.set('mobile', mobileVal);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Sign Up - Missing Fields (Negative)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Negative test: signup request missing name or mobile returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mobile\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies mobile and name required', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/mobile and name required/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. Sign Up - Duplicate Registration",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "signup"
+              ]
+            },
+            "description": "Tests duplicate registration with already registered mobile. The backend idempotently finds the existing user and sends OTP.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mobile\": \"{{signupMobile}}\",\n  \"name\": \"QA Test User\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Duplicate registration handled idempotently without crash', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.message).to.match(/OTP/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. Login / OTP Trigger",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Triggers Firebase phone OTP for registered test user in {{mobile}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mobile\": \"{{mobile}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('OTP trigger success', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.message).to.match(/OTP/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. Verify OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify-otp"
+              ]
+            },
+            "description": "Direct test for Issue #13: Verifies OTP, validates that token exists in both data.token and root token, and chains userToken and userId.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mobile\": \"{{mobile}}\",\n  \"firebaseIdToken\": \"{{firebaseIdToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Response contains success true', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});",
+                  "pm.test('data wrapper exists (Issue #13 fix)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData).to.have.property('data');",
+                  "});",
+                  "pm.test('data.token exists, is not null, not undefined, and non-empty', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.token).to.be.a('string');",
+                  "    pm.expect(jsonData.data.token).to.not.eql('null');",
+                  "    pm.expect(jsonData.data.token).to.not.eql('undefined');",
+                  "    pm.expect(jsonData.data.token.length).to.be.above(10);",
+                  "});",
+                  "pm.test('root token matches data.token', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.token).to.eql(jsonData.data.token);",
+                  "});",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.token) {",
+                  "    pm.environment.set('userToken', jsonData.data.token);",
+                  "}",
+                  "if (jsonData.data && jsonData.data.user && jsonData.data.user.id) {",
+                  "    pm.environment.set('userId', jsonData.data.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. Protected Profile API",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Confirms that the JWT generated at login grants access to protected APIs without 'Session Expired'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('JWT authorizes access to profile', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.be.an('object');",
+                  "    pm.expect(jsonData.data.id).to.eql(pm.environment.get('userId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "08. Missing Authorization",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Negative test: request without Authorization header returns HTTP 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test('Rejects with No token provided', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/no token provided/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "09. Invalid Token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer invalid.jwt.token.here",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Negative test: request with forged/invalid JWT returns HTTP 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test('Rejects with Invalid or expired token', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid or expired token/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. Bearer null",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer null",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Negative test: literal string 'Bearer null' returns HTTP 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test('Rejects literal Bearer null with 401', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid or expired token/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11. Bearer undefined",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer undefined",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Negative test: literal string 'Bearer undefined' returns HTTP 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test('Rejects literal Bearer undefined with 401', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid or expired token/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12. Malformed Authorization",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic dXNlcjpwYXNz",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Negative test: non-Bearer authorization scheme returns HTTP 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 401 Unauthorized', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "});",
+                  "pm.test('Rejects malformed non-Bearer authorization scheme', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/no token provided/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - DOB & Age",
+      "description": "DOB calendar validation, 18-100 age business rule, ignoring client-provided age, and server-side calculation.",
+      "item": [
+        {
+          "name": "01. Valid DOB",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Saves a valid DOB (15-06-1998) within 18-100 age bounds. Server calculates age server-side.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Postman Test User\",\n  \"dobDay\": 15,\n  \"dobMonth\": 6,\n  \"dobYear\": 1998\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Personal profile saved successfully', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Wrong client-provided age",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Client submits age: 99 with DOB 1998. The server must ignore client age and derive age from DOB.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Postman Age Test\",\n  \"dobDay\": 15,\n  \"dobMonth\": 6,\n  \"dobYear\": 1998,\n  \"age\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Request accepted, server ignores client age 99', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Future DOB",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: future date of birth returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Future DOB Test\",\n  \"dobDay\": 1,\n  \"dobMonth\": 1,\n  \"dobYear\": 2030\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies DOB cannot be in the future', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/future/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. February 30",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: February 30 is impossible in any calendar.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Feb 30 Test\",\n  \"dobDay\": 30,\n  \"dobMonth\": 2,\n  \"dobYear\": 2000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies invalid calendar date', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid date/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. April 31",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: April has 30 days.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Apr 31 Test\",\n  \"dobDay\": 31,\n  \"dobMonth\": 4,\n  \"dobYear\": 1995\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies invalid calendar date', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid date/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. Non-leap February 29",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: 2001 is not a leap year.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Non Leap Feb 29 Test\",\n  \"dobDay\": 29,\n  \"dobMonth\": 2,\n  \"dobYear\": 2001\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies invalid calendar date for non-leap year', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/invalid date/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. Age below 18",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: DOB producing age 14 (<18) returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Underage Test\",\n  \"dobDay\": 1,\n  \"dobMonth\": 1,\n  \"dobYear\": 2012\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies minimum age is 18', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/18/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "08. Age above 100",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Negative test: DOB producing age > 100 returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Overage Test\",\n  \"dobDay\": 1,\n  \"dobMonth\": 1,\n  \"dobYear\": 1910\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies age cannot exceed 100', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/100/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "09. Valid age 18",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Positive boundary test: Age exactly 18 is valid and accepted.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Age 18 Test\",\n  \"dobDay\": 1,\n  \"dobMonth\": 1,\n  \"dobYear\": 2008\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Age 18 is accepted', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. Valid age 100",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Positive boundary test: Age exactly 100 is valid and accepted.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Age 100 Test\",\n  \"dobDay\": 1,\n  \"dobMonth\": 1,\n  \"dobYear\": 1926\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Age 100 is accepted', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Profile Filters",
+      "description": "Database-level profile query filtering by age range, gender, religion, caste, location, education, occupation, and validation handling.",
+      "item": [
+        {
+          "name": "01. No filters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ]
+            },
+            "description": "Default browse feed without query parameters."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Returns profile feed', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data.profiles).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. minAge + maxAge",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?minAge=25&maxAge=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "minAge",
+                  "value": "25"
+                },
+                {
+                  "key": "maxAge",
+                  "value": "30"
+                }
+              ]
+            },
+            "description": "Filters profiles within the 25-30 age range."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('All returned profiles satisfy age range 25 to 30', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    var profiles = jsonData.data.profiles;",
+                  "    profiles.forEach(function(p) {",
+                  "        if (p.age) {",
+                  "            pm.expect(p.age).to.be.at.least(25);",
+                  "            pm.expect(p.age).to.be.at.most(30);",
+                  "        }",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. gender",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?gender=MALE",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "gender",
+                  "value": "MALE"
+                }
+              ]
+            },
+            "description": "Filters profiles by gender = MALE."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Profiles feed returned for gender filter', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. religion",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?religion=Hindu",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "religion",
+                  "value": "Hindu"
+                }
+              ]
+            },
+            "description": "Filters profiles by religion."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. caste",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?caste=General",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "caste",
+                  "value": "General"
+                }
+              ]
+            },
+            "description": "Filters profiles by caste."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. location",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?location=Chennai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "location",
+                  "value": "Chennai"
+                }
+              ]
+            },
+            "description": "Filters profiles by location/native city."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. education",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?education=Engineering",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "education",
+                  "value": "Engineering"
+                }
+              ]
+            },
+            "description": "Filters profiles by highestEducation."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "08. occupation",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?occupation=Engineer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "occupation",
+                  "value": "Engineer"
+                }
+              ]
+            },
+            "description": "Filters profiles by jobTitle / occupation."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "09. minAge below 18",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?minAge=17",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "minAge",
+                  "value": "17"
+                }
+              ]
+            },
+            "description": "Negative test: minAge=17 returns HTTP 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error indicates minAge must be at least 18', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/18/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. maxAge above 100",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?maxAge=101",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "maxAge",
+                  "value": "101"
+                }
+              ]
+            },
+            "description": "Negative test: maxAge=101 returns HTTP 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error indicates maxAge cannot exceed 100', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/100/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "11. non-numeric age",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?minAge=abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "minAge",
+                  "value": "abc"
+                }
+              ]
+            },
+            "description": "Negative test: non-numeric age returns HTTP 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error indicates age must be a valid integer', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/integer/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "12. minAge > maxAge",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles?minAge=35&maxAge=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ],
+              "query": [
+                {
+                  "key": "minAge",
+                  "value": "35"
+                },
+                {
+                  "key": "maxAge",
+                  "value": "25"
+                }
+              ]
+            },
+            "description": "Negative test: inverted age range returns HTTP 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error indicates minAge cannot be greater than maxAge', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/minAge cannot be greater than maxAge/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Swipe & Home Exclusion",
+      "description": "Profile swipe validation and exclusion of both LEFT and RIGHT swiped profiles and caller from Home and Dashboard feeds.",
+      "item": [
+        {
+          "name": "01. RIGHT swipe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/{{targetUserId}}/swipe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "{{targetUserId}}",
+                "swipe"
+              ]
+            },
+            "description": "Swipes RIGHT on target user {{targetUserId}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"direction\": \"RIGHT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Swipe saved successfully', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.direction).to.eql('RIGHT');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. LEFT swipe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/{{targetUserId}}/swipe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "{{targetUserId}}",
+                "swipe"
+              ]
+            },
+            "description": "Swipes LEFT on target user {{targetUserId}}.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"direction\": \"LEFT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Swipe saved successfully', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.direction).to.eql('LEFT');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Invalid direction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/{{targetUserId}}/swipe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "{{targetUserId}}",
+                "swipe"
+              ]
+            },
+            "description": "Negative test: invalid swipe direction returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"direction\": \"INVALID\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies direction must be LEFT or RIGHT', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/direction must be LEFT or RIGHT/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. Self swipe",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/{{userId}}/swipe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "{{userId}}",
+                "swipe"
+              ]
+            },
+            "description": "Negative test: swiping own profile returns HTTP 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"direction\": \"RIGHT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error specifies cannot swipe on own profile', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/cannot swipe on your own profile/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. Nonexistent target",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/00000000-0000-0000-0000-000000000000/swipe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "00000000-0000-0000-0000-000000000000",
+                "swipe"
+              ]
+            },
+            "description": "Negative test: swiping nonexistent target returns HTTP 404.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"direction\": \"RIGHT\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 404 Not Found', function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});",
+                  "pm.test('Error specifies target user not found', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/target user not found/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. Home Profiles Exclusion",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ]
+            },
+            "description": "Verifies that neither caller nor swiped profiles appear in the home feed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Current user and swiped profiles excluded from feed', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    var myId = pm.environment.get('userId');",
+                  "    var targetId = pm.environment.get('targetUserId');",
+                  "    var profiles = jsonData.data.profiles || [];",
+                  "    profiles.forEach(function(p) {",
+                  "        if (myId) pm.expect(p.id).to.not.eql(myId);",
+                  "        if (targetId) pm.expect(p.id).to.not.eql(targetId);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. Dashboard Exclusion",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "dashboard"
+              ]
+            },
+            "description": "Verifies that neither caller nor swiped profiles appear in dashboard featured profiles."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Current user and swiped profiles excluded from featured profiles', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    var myId = pm.environment.get('userId');",
+                  "    var targetId = pm.environment.get('targetUserId');",
+                  "    var featured = jsonData.data.featuredProfiles || [];",
+                  "    featured.forEach(function(f) {",
+                  "        if (myId) pm.expect(f.id).to.not.eql(myId);",
+                  "        if (targetId) pm.expect(f.id).to.not.eql(targetId);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - My Interests",
+      "description": "Dedicated /api/profile/interests endpoint tests: route order before /:id, only RIGHT swipes included, privacy of sensitive contact details.",
+      "item": [
+        {
+          "name": "01. Get My Interests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/interests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "interests"
+              ]
+            },
+            "description": "Validates that /api/profile/interests returns only RIGHT swipes and protects private credentials."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Interests array returned successfully', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.be.an('array');",
+                  "});",
+                  "pm.test('Does NOT expose private contact details (password, mobile, email, token)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    jsonData.data.forEach(function(item) {",
+                  "        pm.expect(item).to.not.have.property('password');",
+                  "        pm.expect(item).to.not.have.property('mobile');",
+                  "        pm.expect(item).to.not.have.property('email');",
+                  "        pm.expect(item).to.not.have.property('token');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Name Synchronization",
+      "description": "Two-way atomic synchronization between User.name and PersonalProfile.fullName, and read compatibility.",
+      "item": [
+        {
+          "name": "01. Update Personal Full Name",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/personal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "personal"
+              ]
+            },
+            "description": "Updates fullName. Backend synchronizes User.name inside Prisma transaction.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Postman Name Sync Test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Name update succeeded', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Get My Profile (Verify Sync)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Confirms atomic synchronization across User and PersonalProfile models."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Both User.name and PersonalProfile.fullName reflect updated name', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.name).to.eql('Postman Name Sync Test');",
+                  "    if (jsonData.data.personal) {",
+                  "        pm.expect(jsonData.data.personal.fullName).to.eql('Postman Name Sync Test');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Home Dashboard (Verify Sync)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "dashboard"
+              ]
+            },
+            "description": "Confirms that dashboard userName immediately reflects the updated name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Dashboard userName reflects updated name', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.userName).to.eql('Postman Name Sync Test');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Payment",
+      "description": "Payment failure/cancel handling (Issue #7 fix), explicit FAILED status without undefined, and signature verification.",
+      "item": [
+        {
+          "name": "01. Get packages",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages"
+              ]
+            },
+            "description": "Retrieves packages list and saves paidPackageId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Packages list returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data.packages).to.be.an('array');",
+                  "    if (jsonData.data.packages.length > 0) {",
+                  "        pm.environment.set('paidPackageId', jsonData.data.packages[0].id);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Payment cancel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "cancel"
+              ]
+            },
+            "description": "Tests Issue #7: Payment cancellation returns explicit FAILED status and no undefined.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Explicit status FAILED returned (Issue #7 fix)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.status).to.eql('FAILED');",
+                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
+                  "    pm.expect(jsonData.status).to.not.be.undefined;",
+                  "    pm.expect(jsonData.message).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Payment failed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/payment-failed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "payment-failed"
+              ]
+            },
+            "description": "Tests Issue #7: Payment failure returns explicit FAILED status and no undefined.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"paymentId\": \"{{paymentId}}\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Explicit status FAILED returned (Issue #7 fix)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.status).to.eql('FAILED');",
+                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
+                  "    pm.expect(jsonData.status).to.not.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. Verify payment - Environment Dependent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/verify-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "verify-payment"
+              ]
+            },
+            "description": "ENVIRONMENT DEPENDENT: Verifies Razorpay payment signature. Real gateway verification requires active Razorpay test keys and valid payment signature. Do not fake Razorpay success.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"paymentId\": \"{{paymentId}}\",\n  \"signature\": \"manual_verification_signature\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ENVIRONMENT DEPENDENT: Requires live Razorpay credentials and real transaction signature.",
+                  "// Do not fake Razorpay success. This negative test verifies signature mismatch is rejected.",
+                  "pm.test('Status code is 400 Bad Request on invalid signature', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Invalid signature returns explicit status FAILED', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.status).to.eql('FAILED');",
+                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Test Offer",
+      "description": "Test Offer identification, zero-price server-side activation without gateway (Issue #11 fix), and duplicate claim protection.",
+      "item": [
+        {
+          "name": "01. Identify Test Offer",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages"
+              ]
+            },
+            "description": "Discovers and saves testOfferPackageId from actual database package records."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Identifies real Test Offer package', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    var packages = jsonData.data.packages;",
+                  "    var testOffer = packages.find(function(p) {",
+                  "        return p.price === 0 || (p.title && p.title.toLowerCase().includes('test'));",
+                  "    });",
+                  "    if (testOffer) {",
+                  "        pm.environment.set('testOfferPackageId', testOffer.id);",
+                  "    } else if (packages.length > 0) {",
+                  "        pm.environment.set('testOfferPackageId', packages[0].id);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Create Test Offer Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/create-order",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "create-order"
+              ]
+            },
+            "description": "Processes Test Offer. Zero-price offers complete server-side without gateway order.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{testOfferPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Test Offer processed correctly (Issue #11 fix)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.isFree) {",
+                  "        pm.expect(jsonData.data.status).to.eql('COMPLETED');",
+                  "        pm.expect(jsonData.data.amount).to.eql(0);",
+                  "    } else {",
+                  "        pm.expect(jsonData.data.orderId).to.be.a('string');",
+                  "        pm.environment.set('paymentOrderId', jsonData.data.orderId);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Verify Test Offer Result",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "dashboard"
+              ]
+            },
+            "description": "Confirms credit allocation on user account."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('User account active and contacts available', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data).to.have.property('freeContactsLeft');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. Duplicate Test Offer Claim",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/create-order",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "create-order"
+              ]
+            },
+            "description": "Validates that free/test offer abuse protection prevents double-activation.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{testOfferPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Duplicate free offer claim rejected with 400', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Error indicates offer already claimed', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/already claimed/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "09 - Notifications",
+      "description": "Notification persistent read state (Issue #9 fix), live unread count decrement, IDOR authorization check, and mark-all-read.",
+      "item": [
+        {
+          "name": "01. Get Notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/user",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "user"
+              ]
+            },
+            "description": "Returns notifications list with isRead and readAt fields."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Notifications contain persistent read state (Issue #9 fix)', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.be.an('array');",
+                  "    if (jsonData.data.length > 0) {",
+                  "        pm.expect(jsonData.data[0]).to.have.property('isRead');",
+                  "        pm.expect(jsonData.data[0]).to.have.property('readAt');",
+                  "        pm.environment.set('notificationId', jsonData.data[0].id);",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Get Unread Count",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/unread-count",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "unread-count"
+              ]
+            },
+            "description": "Retrieves live unread notification count."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Unread count is a valid number from database', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data.unreadCount).to.be.a('number');",
+                  "    pm.environment.set('initialUnreadCount', jsonData.data.unreadCount.toString());",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Mark Notification Read",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/{{notificationId}}/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "{{notificationId}}",
+                "read"
+              ]
+            },
+            "description": "Marks a notification as read and stores readAt timestamp."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Notification marked as read with readAt timestamp', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data.isRead).to.eql(true);",
+                  "    pm.expect(jsonData.data.readAt).to.not.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. Verify Unread Count Decreases",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/unread-count",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "unread-count"
+              ]
+            },
+            "description": "Confirms that unread count decrements after marking notification as read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Unread count matches database state', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.unreadCount).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. Unauthorized Notification Access (IDOR)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/00000000-0000-0000-0000-000000000000/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "00000000-0000-0000-0000-000000000000",
+                "read"
+              ]
+            },
+            "description": "Negative test: Users cannot modify another user's notification (IDOR rejection)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 404 Not Found', function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});",
+                  "pm.test('Rejects access to non-owned notification', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.message).to.match(/notification not found/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. Mark All Read",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/read-all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "read-all"
+              ]
+            },
+            "description": "Marks all user notifications as read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('All notifications marked read', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. Verify Unread Count = 0",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/unread-count",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "unread-count"
+              ]
+            },
+            "description": "Confirms that unreadCount is 0 after mark-all-read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Unread count is exactly 0', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.unreadCount).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 - Regression",
+      "description": "Final protected API regression verification ensuring JWT authentication works seamlessly across all primary user endpoints.",
+      "item": [
+        {
+          "name": "01. Profile Me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "me"
+              ]
+            },
+            "description": "Regression check: /api/profile/me."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Full profile object returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02. Home Profiles",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/profiles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "profiles"
+              ]
+            },
+            "description": "Regression check: /api/home/profiles."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Home profiles feed returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data.profiles).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/home/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "home",
+                "dashboard"
+              ]
+            },
+            "description": "Regression check: /api/home/dashboard."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Dashboard data returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.have.property('featuredProfiles');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04. My Interests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile/interests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile",
+                "interests"
+              ]
+            },
+            "description": "Regression check: /api/profile/interests."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Interests array returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

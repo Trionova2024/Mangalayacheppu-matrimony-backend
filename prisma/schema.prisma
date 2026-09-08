@@ -1,0 +1,370 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN
+// ─────────────────────────────────────────────────────────────────────────────
+model Admin {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER  (core record — shared between Flutter app & Admin panel)
+// ─────────────────────────────────────────────────────────────────────────────
+model User {
+  id                String   @id @default(uuid())
+  name              String
+  mobile            String   @unique
+  email             String?  @unique
+  profileImage      String?
+  fcmToken          String?
+  credits           Int      @default(0)
+  freeContactsLeft  Int      @default(3)
+  isProfileComplete Boolean  @default(false)
+  isVerified        Boolean  @default(false)   // set true when admin approves
+  status            String   @default("PENDING") // PENDING | ACTIVE | BLOCKED | INACTIVE
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Profile sections (Flutter fills these)
+  personal     PersonalProfile?
+  family       FamilyProfile?
+  professional ProfessionalProfile?
+  physical     PhysicalProfile?
+  privacy      PrivacySettings?
+
+  // Relations
+  gallery          GalleryPhoto[]
+  transactions     Transaction[]
+  creditAuditLogs  CreditAuditLog[]
+  supportTickets   SupportTicket[]
+  profileApproval  ProfileApproval?
+  reportsGiven     UserReport[]      @relation("Reporter")
+  reportsReceived  UserReport[]      @relation("Accused")
+  callLogsAsLocker CallLog[]         @relation("Locker")
+  callLogsAsViewed CallLog[]         @relation("Viewed")
+  notifRecipients  NotificationRecipient[]
+  bookmarks        Bookmark[]        @relation("BookmarkOwner")
+  bookmarkedBy     Bookmark[]        @relation("BookmarkTarget")
+  swipes           Swipe[]           @relation("SwipeOwner")
+  swipedBy         Swipe[]           @relation("SwipeTarget")
+
+  @@index([status, isVerified])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROFILE SECTIONS  (Flutter app fills these via edit screens)
+// ─────────────────────────────────────────────────────────────────────────────
+model PersonalProfile {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  fullName         String?
+  profileManagedBy String?
+  gender           String?
+  age              Int?
+  dobDay           String?
+  dobMonth         String?
+  dobYear          String?
+  religion         String?
+  caste            String?
+  subCaste         String?
+  nakshatram       String?
+  native           String?
+  aboutMe          String?
+  interests        String[]  @default([])
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model FamilyProfile {
+  id                 String    @id @default(uuid())
+  userId             String    @unique
+  fatherName         String?
+  fatherOccupation   String?
+  motherName         String?
+  motherOccupation   String?
+  siblings           Int?
+  siblingNames       String[]  @default([])
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProfessionalProfile {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  highestEducation String?
+  fieldOfStudy     String?
+  occupationType   String?
+  jobTitle         String?
+  organisation     String?
+  annualIncome     String?
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PhysicalProfile {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  height     String?
+  weight     String?
+  complexion String?
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PrivacySettings {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  profileVisible  Boolean  @default(true)
+  showPhotoToAll  Boolean  @default(true)
+  showPhoneNumber Boolean  @default(false)
+  showEmail       Boolean  @default(false)
+  showHoroscope   Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GALLERY  (Flutter uploads, Admin sees in profile approval)
+// ─────────────────────────────────────────────────────────────────────────────
+model GalleryPhoto {
+  id         String   @id @default(uuid())
+  userId     String
+  url        String
+  filename   String?
+  uploadedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROFILE APPROVAL  (Admin approves → isVerified = true on User)
+// ─────────────────────────────────────────────────────────────────────────────
+model ProfileApproval {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  location    String?
+  status      String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  submittedAt DateTime  @default(now())
+  reviewedAt  DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PACKAGES & PAYMENTS  (Flutter buys → credits added → Admin sees transaction)
+// ─────────────────────────────────────────────────────────────────────────────
+model Package {
+  id           String   @id @default(uuid())
+  name         String
+  title        String?
+  subtitle     String?
+  credits      Int
+  amount       Float
+  price        Int?
+  validityDays Int      @default(90)
+  description  String?
+  status       String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  transactions Transaction[]
+}
+
+model Transaction {
+  id             String   @id @default(uuid())
+  userId         String
+  packageId      String?
+  amount         Float
+  paymentMethod  String   @default("RAZORPAY")
+  cardInfo       String?
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+  status         String   @default("COMPLETED") // COMPLETED | FAILED | PENDING | REFUNDED
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package Package? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([razorpayPaymentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CALL LOGS  (Flutter unlocks contact → log written → Admin sees it)
+// ─────────────────────────────────────────────────────────────────────────────
+model CallLog {
+  id        String   @id @default(uuid())
+  lockerId  String
+  viewedId  String
+  credits   Int      @default(1)
+  pack      String   @default("Free")
+  createdAt DateTime @default(now())
+
+  locker User @relation("Locker", fields: [lockerId], references: [id], onDelete: Cascade)
+  viewed User @relation("Viewed", fields: [viewedId], references: [id], onDelete: Cascade)
+
+  @@index([lockerId, viewedId])
+  @@index([viewedId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CREDIT AUDIT LOG  (Tracks all admin/system credit adjustments)
+// ─────────────────────────────────────────────────────────────────────────────
+model CreditAuditLog {
+  id           String   @id @default(uuid())
+  userId       String
+  adminId      String?
+  amount       Int
+  balanceAfter Int?
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER REPORTS  (Flutter reports → Admin takes action)
+// ─────────────────────────────────────────────────────────────────────────────
+model UserReport {
+  id         String   @id @default(uuid())
+  accusedId  String
+  reporterId String
+  reason     String
+  category   String   @default("HARASSMENT")
+  status     String   @default("PENDING")  // PENDING | REVIEWED
+  action     String?                       // WARNED | SUSPENDED | BANNED
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  accused  User @relation("Accused",  fields: [accusedId],  references: [id], onDelete: Cascade)
+  reporter User @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPPORT TICKETS  (Flutter submits → Admin chats back)
+// ─────────────────────────────────────────────────────────────────────────────
+model SupportTicket {
+  id        String   @id @default(uuid())
+  userId    String?
+  name      String
+  email     String
+  subject   String
+  status    String   @default("OPEN") // OPEN | PENDING | RESOLVED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages SupportMessage[]
+
+  @@index([status])
+}
+
+model SupportMessage {
+  id        String   @id @default(uuid())
+  ticketId  String
+  sender    String   // CUSTOMER | ADMIN
+  text      String
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATIONS  (Admin creates → sent to Flutter via FCM)
+// ─────────────────────────────────────────────────────────────────────────────
+model Notification {
+  id        String    @id @default(uuid())
+  title     String
+  message   String?
+  type      String    @default("GLOBAL") // GLOBAL | INDIVIDUAL
+  segment   String?
+  isDraft   Boolean   @default(false)
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  recipients NotificationRecipient[]
+}
+
+model NotificationRecipient {
+  id             String    @id @default(uuid())
+  notificationId String
+  userId         String
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId],         references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOOKMARKS & SWIPES  (Flutter actions)
+// ─────────────────────────────────────────────────────────────────────────────
+model Bookmark {
+  id       String   @id @default(uuid())
+  ownerId  String
+  targetId String
+  createdAt DateTime @default(now())
+
+  owner  User @relation("BookmarkOwner",  fields: [ownerId],  references: [id], onDelete: Cascade)
+  target User @relation("BookmarkTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, targetId])
+  @@index([targetId])
+}
+
+model Swipe {
+  id        String   @id @default(uuid())
+  ownerId   String
+  targetId  String
+  direction String   // LEFT | RIGHT
+  createdAt DateTime @default(now())
+
+  owner  User @relation("SwipeOwner",  fields: [ownerId],  references: [id], onDelete: Cascade)
+  target User @relation("SwipeTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, targetId])
+  @@index([ownerId])
+  @@index([targetId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APP CONFIG  (Admin sets free credit defaults)
+// ─────────────────────────────────────────────────────────────────────────────
+model AppConfig {
+  id             String   @id @default("singleton")
+  defaultCredits Int      @default(3)
+  validityMonths Int      @default(3)
+  razorpayKeyId  String?
+  razorpaySecret String?
+  updatedAt      DateTime @updatedAt
+}
