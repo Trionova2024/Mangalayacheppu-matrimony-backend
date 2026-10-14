@@ -1,7 +1,68 @@
 const router   = require("express").Router();
+const multer   = require("multer");
+const path     = require("path");
+const fs       = require("fs");
 const prisma   = require("../lib/prisma");
 const userAuth = require("../middleware/userAuth");
 const { validateAndCalculateAge, getAgeFromDob } = require("../utils/age");
+
+// ── Horoscope upload setup ─────────────────────────────────────────────────────
+// Extension is derived from the MIME type allow-list, never from the client's
+// filename, so a file can't be served back as .html/.js from /uploads.
+const HOROSCOPE_TYPES = {
+  "image/jpeg":      ".jpg",
+  "image/png":       ".png",
+  "image/webp":      ".webp",
+  "application/pdf": ".pdf",
+};
+
+const uploadDir = path.join(__dirname, "../../", process.env.UPLOAD_DIR || "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const horoscopeUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadDir),
+    filename:    (_req, file, cb) => {
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `horoscope-${unique}${HOROSCOPE_TYPES[file.mimetype]}`);
+    },
+  }),
+  limits: { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (HOROSCOPE_TYPES[file.mimetype]) return cb(null, true);
+    const err = new Error("Only JPG, PNG, WEBP or PDF files allowed");
+    err.status = 400;
+    cb(err);
+  },
+}).fields([
+  { name: "horoscope", maxCount: 1 },
+  { name: "file",      maxCount: 1 },
+]);
+
+// Wraps multer so upload errors become 400s instead of falling through to the 500 handler
+function handleHoroscopeUpload(req, res, next) {
+  console.log("[horoscope] incoming:", {
+    user:          req.user.id,
+    contentType:   req.headers["content-type"],
+    contentLength: req.headers["content-length"],
+  });
+  horoscopeUpload(req, res, (err) => {
+    if (!err) return next();
+    console.error("[horoscope] upload error:", { code: err.code, field: err.field, message: err.message });
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === "LIMIT_FILE_SIZE")
+      return res.status(400).json({ message: `File too large. Max ${parseInt(process.env.MAX_FILE_SIZE_MB) || 5} MB` });
+    if (err.code === "LIMIT_UNEXPECTED_FILE")
+      return res.status(400).json({ message: "Send the file in a multipart field named 'horoscope'" });
+    if (err instanceof multer.MulterError) return res.status(400).json({ message: err.message });
+    next(err);
+  });
+}
+
+function removeUpload(url) {
+  if (!url) return;
+  fs.unlink(path.join(uploadDir, path.basename(url)), () => {});
+}
 
 // ── GET /api/profile/me  — Flutter: my profile screen ─────────────────────────
 router.get("/me", userAuth, async (req, res) => {
@@ -10,7 +71,7 @@ router.get("/me", userAuth, async (req, res) => {
       where:   { id: req.user.id },
       include: { personal: true, family: true, professional: true, physical: true, privacy: true, gallery: true },
     });
-    res.json({ success: true, data: formatProfile(user) });
+    res.json({ success: true, data: formatProfile(user, { showHoroscope: true }) });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -173,6 +234,54 @@ router.post("/physical", userAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// ── POST /api/profile/horoscope  — multipart upload, field "horoscope" ─────────
+router.post("/horoscope", userAuth, handleHoroscopeUpload, async (req, res) => {
+  const file = req.files?.horoscope?.[0] || req.files?.file?.[0];
+  if (!file) {
+    console.warn("[horoscope] no file in 'horoscope' or 'file' field; body fields:", Object.keys(req.body || {}));
+    return res.status(400).json({ message: "No file uploaded. Use multipart field 'horoscope'" });
+  }
+  console.log("[horoscope] file:", { field: file.fieldname, originalname: file.originalname, mimetype: file.mimetype, size: file.size });
+
+  const url = `/uploads/${file.filename}`;
+  try {
+    const existing = await prisma.personalProfile.findUnique({ where: { userId: req.user.id } });
+    await prisma.personalProfile.upsert({
+      where:  { userId: req.user.id },
+      create: { userId: req.user.id, horoscopeUrl: url },
+      update: { horoscopeUrl: url },
+    });
+    removeUpload(existing?.horoscopeUrl);
+    console.log("[horoscope] saved:", url);
+    res.json({ success: true, data: { horoscopeUrl: url } });
+  } catch (err) {
+    console.error("[horoscope] save failed:", err);
+    removeUpload(url);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/profile/horoscope ─────────────────────────────────────────────────
+router.get("/horoscope", userAuth, async (req, res) => {
+  try {
+    const personal = await prisma.personalProfile.findUnique({ where: { userId: req.user.id } });
+    res.json({ success: true, data: { horoscopeUrl: personal?.horoscopeUrl || null } });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ── DELETE /api/profile/horoscope ──────────────────────────────────────────────
+router.delete("/horoscope", userAuth, async (req, res) => {
+  try {
+    const personal = await prisma.personalProfile.findUnique({ where: { userId: req.user.id } });
+    const oldUrl   = personal?.horoscopeUrl;
+    if (oldUrl) {
+      await prisma.personalProfile.update({ where: { userId: req.user.id }, data: { horoscopeUrl: null } });
+      removeUpload(oldUrl);
+    }
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // ── GET /api/profile/:id  — Flutter: view another user's profile ───────────────
 router.get("/:id", userAuth, async (req, res) => {
   try {
@@ -183,7 +292,7 @@ router.get("/:id", userAuth, async (req, res) => {
     if (!target) return res.status(404).json({ message: "Profile not found" });
     if (target.status !== "ACTIVE") return res.status(404).json({ message: "Profile not available" });
 
-    res.json({ success: true, data: formatProfile(target) });
+    res.json({ success: true, data: formatProfile(target, { showHoroscope: !!target.privacy?.showHoroscope }) });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -334,7 +443,7 @@ router.post("/:id/swipe", userAuth, async (req, res) => {
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function formatProfile(user) {
+function formatProfile(user, { showHoroscope = false } = {}) {
   return {
     id:               user.id,
     name:             user.personal?.fullName || user.name,
@@ -344,7 +453,7 @@ function formatProfile(user) {
     isProfileComplete: user.isProfileComplete,
     freeContactsLeft: user.freeContactsLeft,
     status:           user.status,
-    personal:         user.personal     ? formatPersonal(user.personal)     : null,
+    personal:         user.personal     ? formatPersonal(user.personal, showHoroscope) : null,
     family:           user.family       ? user.family                       : null,
     professional:     user.professional ? user.professional                 : null,
     physical:         user.physical     ? user.physical                     : null,
@@ -352,7 +461,7 @@ function formatProfile(user) {
   };
 }
 
-function formatPersonal(p) {
+function formatPersonal(p, showHoroscope = false) {
   const age = getAgeFromDob(p.dobDay, p.dobMonth, p.dobYear, p.age);
   return {
     fullName:         p.fullName,
@@ -367,6 +476,7 @@ function formatPersonal(p) {
     native:           p.native,
     aboutMe:          p.aboutMe,
     interests:        p.interests,
+    horoscopeUrl:     showHoroscope ? (p.horoscopeUrl || null) : null,
     updatedAt:        p.updatedAt,
   };
 }

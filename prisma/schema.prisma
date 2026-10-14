@@ -84,6 +84,7 @@ model PersonalProfile {
   native           String?
   aboutMe          String?
   interests        String[]  @default([])
+  horoscopeUrl     String?
   updatedAt        DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
