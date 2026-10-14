@@ -5,6 +5,7 @@ const adminAuth = require("../middleware/adminAuth");
 
 // ── Flutter: GET /api/notifications/user  — user's notification list ──────────
 router.get("/user", userAuth, async (req, res) => {
+  console.log("[notifications/user] request from user:", req.user.id);
   try {
     const notifs = await prisma.notificationRecipient.findMany({
       where:   { userId: req.user.id },
@@ -12,6 +13,7 @@ router.get("/user", userAuth, async (req, res) => {
       include: { notification: true },
       take:    50,
     });
+    console.log("[notifications/user] found:", notifs.length, "notifications");
     res.json({
       success: true,
       data: notifs.map(n => ({
@@ -23,7 +25,15 @@ router.get("/user", userAuth, async (req, res) => {
         readAt:   n.readAt,
       })),
     });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    console.error("[notifications/user] FAILED for user:", req.user.id, {
+      code:    err.code,
+      meta:    err.meta,
+      message: err.message,
+    });
+    console.error(err.stack);
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── Flutter: GET /api/notifications/unread-count ──────────────────────────────
