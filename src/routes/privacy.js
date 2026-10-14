@@ -17,6 +17,10 @@ router.get("/", userAuth, async (req, res) => {
 router.put("/", userAuth, async (req, res) => {
   try {
     const { profileVisible, showPhotoToAll, showPhoneNumber, showEmail, showHoroscope } = req.body;
+    const fields = { profileVisible, showPhotoToAll, showPhoneNumber, showEmail, showHoroscope };
+    const invalid = Object.keys(fields).filter(k => fields[k] !== undefined && typeof fields[k] !== "boolean");
+    if (invalid.length) return res.status(400).json({ message: `${invalid.join(", ")} must be true or false` });
+
     const privacy = await prisma.privacySettings.upsert({
       where:  { userId: req.user.id },
       create: { userId: req.user.id, profileVisible, showPhotoToAll, showPhoneNumber, showEmail, showHoroscope },

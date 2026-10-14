@@ -117,6 +117,7 @@ router.get("/", adminAuth, async (_req, res) => {
 router.post("/", adminAuth, async (req, res) => {
   try {
     const { title, message, isDraft } = req.body;
+    if (!title || !String(title).trim()) return res.status(400).json({ message: "title is required" });
 
     const notif = await prisma.notification.create({
       data: { title, message: message || "", type: "GLOBAL", isDraft: isDraft === true, sentAt: isDraft ? null : new Date() },
@@ -143,14 +144,20 @@ router.put("/:id", adminAuth, async (req, res) => {
     const { title, message, isDraft } = req.body;
     const notif = await prisma.notification.update({ where: { id: req.params.id }, data: { title, message, isDraft: isDraft === true } });
     res.json({ data: notif });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Notification not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
     await prisma.notification.delete({ where: { id: req.params.id } });
     res.json({ data: null });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Notification not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── Admin: PATCH /api/notifications/:id/send  — send a saved draft ────────────
@@ -167,7 +174,10 @@ router.patch("/:id/send", adminAuth, async (req, res) => {
     });
 
     res.json({ data: notif });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Notification not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── Admin: GET /api/notifications/expiring ────────────────────────────────────
@@ -194,12 +204,14 @@ router.get("/expiring", adminAuth, async (req, res) => {
 router.post("/send-expiry/:userId", adminAuth, async (req, res) => {
   try {
     const { name, pack, daysLeft } = req.body;
+    const user = await prisma.user.findUnique({ where: { id: req.params.userId }, select: { fcmToken: true } });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
     const title   = `Package Expiry — ${pack}`;
     const message = `Hi ${name}, your ${pack} package expires in ${daysLeft} day(s). Renew to keep access!`;
     const notif   = await prisma.notification.create({ data: { title, message, type: "INDIVIDUAL", isDraft: false, sentAt: new Date() } });
     await prisma.notificationRecipient.create({ data: { notificationId: notif.id, userId: req.params.userId, isRead: false } });
-    const user = await prisma.user.findUnique({ where: { id: req.params.userId }, select: { fcmToken: true } });
-    if (user?.fcmToken) await sendPush(user.fcmToken, title, message);
+    if (user.fcmToken) await sendPush(user.fcmToken, title, message);
     res.json({ data: notif });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });

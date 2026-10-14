@@ -21,10 +21,24 @@ const upload = multer({
   storage,
   limits: { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files allowed"), false);
+    if (file.mimetype.startsWith("image/")) return cb(null, true);
+    const err = new Error("Only image files allowed");
+    err.status = 400;
+    cb(err);
   },
 });
+
+// Wraps multer so upload errors become 400s instead of falling through to the 500 handler
+function handlePhotoUpload(req, res, next) {
+  upload.single("photo")(req, res, (err) => {
+    if (!err) return next();
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === "LIMIT_FILE_SIZE")
+      return res.status(400).json({ message: `File too large. Max ${parseInt(process.env.MAX_FILE_SIZE_MB) || 5} MB` });
+    if (err instanceof multer.MulterError) return res.status(400).json({ message: err.message });
+    next(err);
+  });
+}
 
 // ── GET /api/gallery ───────────────────────────────────────────────────────────
 router.get("/", userAuth, async (req, res) => {
@@ -38,7 +52,7 @@ router.get("/", userAuth, async (req, res) => {
 });
 
 // ── POST /api/gallery/upload ───────────────────────────────────────────────────
-router.post("/upload", userAuth, upload.single("photo"), async (req, res) => {
+router.post("/upload", userAuth, handlePhotoUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 

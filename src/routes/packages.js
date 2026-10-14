@@ -589,7 +589,10 @@ router.patch("/approvals/:id/approve", adminAuth, async (req, res) => {
     await prisma.user.update({ where: { id: approval.userId }, data: { isVerified: true, status: "ACTIVE" } });
     await sendPush(approval.userId, "Profile Approved! 🎉", "Your profile is now live. Start exploring matches!");
     res.json({ data: approval });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Approval not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 router.patch("/approvals/:id/reject", adminAuth, async (req, res) => {
@@ -597,7 +600,10 @@ router.patch("/approvals/:id/reject", adminAuth, async (req, res) => {
     const approval = await prisma.profileApproval.update({ where: { id: req.params.id }, data: { status: "REJECTED", reviewedAt: new Date() } });
     await sendPush(approval.userId, "Profile Update Required", "Your profile needs some changes. Please update and resubmit.");
     res.json({ data: approval });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Approval not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 router.post("/", adminAuth, async (req, res) => {
@@ -691,7 +697,10 @@ router.delete("/:id", adminAuth, async (req, res) => {
   try {
     await prisma.package.delete({ where: { id: req.params.id } });
     res.json({ data: null });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Package not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 async function sendPush(userId, title, body) {

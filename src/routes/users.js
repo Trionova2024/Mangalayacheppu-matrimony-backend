@@ -212,7 +212,10 @@ router.delete("/:id", adminAuth, async (req, res) => {
   try {
     await prisma.user.delete({ where: { id: req.params.id } });
     res.json({ data: null });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "User not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── Admin: PATCH /api/users/:id/credits ───────────────────────────────────────
@@ -330,7 +333,11 @@ router.get("/reports", adminAuth, async (req, res) => {
 // Takes action on report → enforced in Flutter via status check
 router.patch("/reports/:id/action", adminAuth, async (req, res) => {
   try {
-    const { action } = req.body; // WARNED | SUSPENDED | BANNED
+    const allowedActions = ["WARNED", "SUSPENDED", "BANNED"];
+    const action = String(req.body.action || "").trim().toUpperCase();
+    if (!allowedActions.includes(action)) {
+      return res.status(400).json({ message: "Invalid action. Allowed values: WARNED, SUSPENDED, BANNED" });
+    }
 
     const report = await prisma.userReport.update({
       where: { id: req.params.id },
@@ -355,7 +362,10 @@ router.patch("/reports/:id/action", adminAuth, async (req, res) => {
     }
 
     res.json({ data: { action } });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Report not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── Flutter: POST /api/users/report  — user reports another user ───────────────
@@ -363,6 +373,9 @@ router.post("/report", userAuth, async (req, res) => {
   try {
     const { accusedId, reason, category } = req.body;
     if (!accusedId || !reason) return res.status(400).json({ message: "accusedId and reason required" });
+
+    const accused = await prisma.user.findUnique({ where: { id: String(accusedId) }, select: { id: true } });
+    if (!accused) return res.status(404).json({ message: "Reported user not found" });
 
     const report = await prisma.userReport.create({
       data: { accusedId, reporterId: req.user.id, reason, category: category || "HARASSMENT" },

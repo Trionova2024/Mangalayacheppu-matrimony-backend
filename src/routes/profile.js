@@ -185,12 +185,23 @@ router.post("/personal", userAuth, async (req, res) => {
 router.post("/family", userAuth, async (req, res) => {
   try {
     const d = req.body;
+
+    // Accepts a whole number 0–20; "5+" from the dropdown is stored as 5
+    let siblings = undefined;
+    if (d.siblings !== undefined && d.siblings !== null && d.siblings !== "") {
+      const num = Number(String(d.siblings).trim().replace(/\+$/, ""));
+      if (!Number.isInteger(num) || num < 0 || num > 20) {
+        return res.status(400).json({ message: "siblings must be a whole number between 0 and 20" });
+      }
+      siblings = num;
+    }
+
     const data = {
       fatherName:       d.fatherName,
       fatherOccupation: d.fatherOccupation,
       motherName:       d.motherName,
       motherOccupation: d.motherOccupation,
-      siblings:         d.siblings ? Number(d.siblings) : undefined,
+      siblings,
       siblingNames:     d.siblingNames || [],
     };
     await prisma.familyProfile.upsert({
@@ -392,6 +403,9 @@ router.post("/:id/unlock-contact", userAuth, async (req, res) => {
 // ── POST /api/profile/:id/bookmark ────────────────────────────────────────────
 router.post("/:id/bookmark", userAuth, async (req, res) => {
   try {
+    const target = await prisma.user.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!target) return res.status(404).json({ message: "Profile not found" });
+
     const existing = await prisma.bookmark.findUnique({
       where: { ownerId_targetId: { ownerId: req.user.id, targetId: req.params.id } },
     });

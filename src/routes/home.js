@@ -129,10 +129,9 @@ router.get("/profiles", userAuth, async (req, res) => {
       id:         { notIn: excludedIds },
       isVerified: true,
       status:     "ACTIVE",
-      personal: {
-        isNot: null,
-        ...personalWhere,
-      },
+      // `is` requires a personal profile to exist AND match the filters
+      // (an empty object still excludes users without one)
+      personal: { is: personalWhere },
       ...(Object.keys(professionalWhere).length > 0 && { professional: professionalWhere }),
     };
 

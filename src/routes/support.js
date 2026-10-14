@@ -47,6 +47,10 @@ router.get("/:id", adminAuth, async (req, res) => {
 router.post("/:id/messages", adminAuth, async (req, res) => {
   try {
     const { text, sender } = req.body;
+    if (!text || !String(text).trim()) return res.status(400).json({ message: "text is required" });
+    const exists = await prisma.supportTicket.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!exists) return res.status(404).json({ message: "Ticket not found" });
+
     const msg = await prisma.supportMessage.create({ data: { ticketId: req.params.id, sender: sender || "ADMIN", text } });
     const ticket = await prisma.supportTicket.update({ where: { id: req.params.id }, data: { status: "PENDING", updatedAt: new Date() }, include: { user: true } });
     // Push to user
@@ -60,10 +64,17 @@ router.post("/:id/messages", adminAuth, async (req, res) => {
 
 router.patch("/:id/status", adminAuth, async (req, res) => {
   try {
-    const { status } = req.body;
+    const allowedStatuses = ["OPEN", "PENDING", "RESOLVED"];
+    const status = String(req.body.status || "").trim().toUpperCase();
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status. Allowed values: OPEN, PENDING, RESOLVED" });
+    }
     const ticket = await prisma.supportTicket.update({ where: { id: req.params.id }, data: { status } });
     res.json({ data: ticket });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Ticket not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

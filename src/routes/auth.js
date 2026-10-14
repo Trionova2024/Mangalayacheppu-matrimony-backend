@@ -171,6 +171,8 @@ router.put("/profile", adminAuth, async (req, res) => {
 router.put("/password", adminAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    if (typeof currentPassword !== "string" || !currentPassword || typeof newPassword !== "string" || !newPassword)
+      return res.status(400).json({ message: "currentPassword and newPassword required" });
     const valid = await bcrypt.compare(currentPassword, req.admin.password);
     if (!valid) return res.status(400).json({ message: "Current password incorrect" });
     const hashed = await bcrypt.hash(newPassword, 10);

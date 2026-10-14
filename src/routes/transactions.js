@@ -81,7 +81,10 @@ router.delete("/:id", adminAuth, async (req, res) => {
   try {
     await prisma.transaction.delete({ where: { id: req.params.id } });
     res.json({ data: null });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err.code === "P2025") return res.status(404).json({ message: "Transaction not found" });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 function titleCase(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s; }
