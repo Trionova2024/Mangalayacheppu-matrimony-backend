@@ -10,11 +10,6 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    console.log("[gallery] fileFilter checking:", {
-      fieldname:    file.fieldname,
-      originalname: file.originalname,
-      mimetype:     file.mimetype,
-    });
     if (file.mimetype.startsWith("image/")) return cb(null, true);
     const err = new Error("Only image files allowed");
     err.status = 400;
@@ -24,20 +19,8 @@ const upload = multer({
 
 // Wraps multer so upload errors become 400s instead of falling through to the 500 handler
 function handlePhotoUpload(req, res, next) {
-  console.log("[gallery] Incoming upload request:", {
-    userId:        req.user?.id,
-    path:          req.originalUrl,
-    contentType:   req.headers["content-type"],
-    contentLength: req.headers["content-length"],
-  });
-
   upload.single("photo")(req, res, (err) => {
     if (!err) return next();
-    console.error("[gallery] Multer error:", {
-      code:    err.code,
-      field:   err.field,
-      message: err.message,
-    });
     if (err.status) return res.status(err.status).json({ message: err.message });
     if (err.code === "LIMIT_FILE_SIZE")
       return res.status(400).json({ message: `File too large. Max ${parseInt(process.env.MAX_FILE_SIZE_MB) || 5} MB` });
@@ -60,26 +43,13 @@ router.get("/", userAuth, async (req, res) => {
         url: p.url.startsWith("http") ? p.url : `/uploads/${path.basename(p.url)}`,
       })),
     });
-  } catch (err) {
-    console.error("[gallery] GET / error:", err);
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 // ── POST /api/gallery/upload ───────────────────────────────────────────────────
 router.post("/upload", userAuth, handlePhotoUpload, async (req, res) => {
   try {
-    console.log("[gallery] POST /upload handler triggered. req.file:", req.file ? {
-      fieldname:    req.file.fieldname,
-      originalname: req.file.originalname,
-      mimetype:     req.file.mimetype,
-      size:         req.file.size,
-    } : "undefined");
-
-    if (!req.file) {
-      console.warn("[gallery] POST /upload - No file in req.file. Body keys:", Object.keys(req.body || {}));
-      return res.status(400).json({ message: "No file uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
     // Upload directly to S3 with datewise folder and userId+date naming
     const s3Result = await uploadToS3({
@@ -98,15 +68,25 @@ router.post("/upload", userAuth, handlePhotoUpload, async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user.profileImage) {
       await prisma.user.update({ where: { id: req.user.id }, data: { profileImage: url } });
-      console.log(`[gallery] Assigned first photo as profileImage for user ${req.user.id}`);
     }
 
-    console.log(`[gallery] Photo successfully saved to DB. id=${photo.id}, url=${url}`);
     res.json({ success: true, data: { id: photo.id, url } });
-  } catch (err) {
-    console.error("[gallery] POST /upload failed with error:", err);
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ── DELETE /api/gallery/:id ────────────────────────────────────────────────────
+router.delete("/:id", userAuth, async (req, res) => {
+  try {
+    const photo = await prisma.galleryPhoto.findFirst({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+    if (!photo) return res.status(404).json({ message: "Photo not found" });
+
+    // Only delete the record in DB
+    await prisma.galleryPhoto.delete({ where: { id: photo.id } });
+
+    res.json({ success: true, message: "Photo deleted successfully" });
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 module.exports = router;
