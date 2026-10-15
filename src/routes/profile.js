@@ -65,6 +65,37 @@ async function removeUpload(url) {
   }
 }
 
+// ── Profile picture upload setup ───────────────────────────────────────────────
+const pictureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) return cb(null, true);
+    const err = new Error("Only image files allowed");
+    err.status = 400;
+    cb(err);
+  },
+}).fields([
+  { name: "picture", maxCount: 1 },
+  { name: "photo",   maxCount: 1 },
+  { name: "image",   maxCount: 1 },
+  { name: "file",    maxCount: 1 },
+]);
+
+function handlePictureUpload(req, res, next) {
+  const isMultipart = req.headers["content-type"]?.includes("multipart");
+  if (!isMultipart) return next();
+
+  pictureUpload(req, res, (err) => {
+    if (!err) return next();
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    if (err.code === "LIMIT_FILE_SIZE")
+      return res.status(400).json({ message: `File too large. Max ${parseInt(process.env.MAX_FILE_SIZE_MB) || 5} MB` });
+    if (err instanceof multer.MulterError) return res.status(400).json({ message: err.message });
+    next(err);
+  });
+}
+
 
 // ── GET /api/profile/me  — Flutter: my profile screen ─────────────────────────
 router.get("/me", userAuth, async (req, res) => {
@@ -305,6 +336,65 @@ router.delete("/horoscope", userAuth, async (req, res) => {
     }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ── POST /api/profile/picture  — upload or set profile picture ─────────────────
+router.post("/picture", userAuth, handlePictureUpload, async (req, res) => {
+  try {
+    const file =
+      req.files?.picture?.[0] ||
+      req.files?.photo?.[0] ||
+      req.files?.image?.[0] ||
+      req.files?.file?.[0] ||
+      req.file;
+
+    let url;
+    if (file) {
+      const s3Result = await uploadToS3({
+        buffer:       file.buffer,
+        userId:       req.user.id,
+        originalname: file.originalname,
+        mimetype:     file.mimetype,
+      });
+      url = s3Result.url;
+    } else if (req.body?.pictureUrl || req.body?.url || req.body?.picture || req.body?.imageUrl) {
+      url = req.body.pictureUrl || req.body.url || req.body.picture || req.body.imageUrl;
+    } else if (req.body?.photoId) {
+      const photo = await prisma.galleryPhoto.findFirst({
+        where: { id: req.body.photoId, userId: req.user.id },
+      });
+      if (!photo) return res.status(404).json({ message: "Photo not found" });
+      url = photo.url;
+    } else {
+      return res.status(400).json({ message: "No picture file or URL provided" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data:  { profileImage: url },
+    });
+
+    res.json({
+      success: true,
+      data: { profileImage: url, url },
+      message: "Profile picture updated successfully",
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── DELETE /api/profile/picture ────────────────────────────────────────────────
+router.delete("/picture", userAuth, async (req, res) => {
+  try {
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data:  { profileImage: null },
+    });
+    res.json({ success: true, message: "Profile picture removed successfully" });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ── GET /api/profile/:id  — Flutter: view another user's profile ───────────────
