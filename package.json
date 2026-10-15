@@ -12,14 +12,15 @@
     "test": "node test/tests/test_backend_fixes.js && node test/tests/test_all_requirements.js && node test/tests/test_part2.js && node test/tests/test_issue13.js && node test/tests/test_inactive_profiles.js && node test/tests/test_be09_be26.js && node test/tests/test_qa_28_issues.js && node test/tests/test_free_offer_concurrency.js && node test/tests/test_master_audit.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
     "@prisma/client": "^5.14.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "firebase-admin": "^12.2.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "firebase-admin": "^12.2.0"
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.4",

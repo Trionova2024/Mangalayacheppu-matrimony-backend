@@ -1,24 +1,13 @@
 const router   = require("express").Router();
 const multer   = require("multer");
 const path     = require("path");
-const fs       = require("fs");
 const prisma   = require("../lib/prisma");
 const userAuth = require("../middleware/userAuth");
+const { uploadToS3 } = require("../lib/s3");
 
-// ── Multer setup ───────────────────────────────────────────────────────────────
-const uploadDir = path.join(__dirname, "../../", process.env.UPLOAD_DIR || "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename:    (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
-  },
-});
-
+// ── Multer setup (In-memory storage for S3 uploads) ───────────────────────────
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith("image/")) return cb(null, true);
@@ -47,7 +36,13 @@ router.get("/", userAuth, async (req, res) => {
       where:   { userId: req.user.id },
       orderBy: { uploadedAt: "desc" },
     });
-    res.json({ success: true, data: photos.map(p => ({ id: p.id, url: `/uploads/${path.basename(p.url)}` })) });
+    res.json({
+      success: true,
+      data: photos.map(p => ({
+        id: p.id,
+        url: p.url.startsWith("http") ? p.url : `/uploads/${path.basename(p.url)}`,
+      })),
+    });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -56,9 +51,17 @@ router.post("/upload", userAuth, handlePhotoUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
-    const url = `/uploads/${req.file.filename}`;
+    // Upload directly to S3 with datewise folder and userId+date naming
+    const s3Result = await uploadToS3({
+      buffer:       req.file.buffer,
+      userId:       req.user.id,
+      originalname: req.file.originalname,
+      mimetype:     req.file.mimetype,
+    });
+
+    const url = s3Result.url;
     const photo = await prisma.galleryPhoto.create({
-      data: { userId: req.user.id, url, filename: req.file.filename },
+      data: { userId: req.user.id, url, filename: s3Result.key },
     });
 
     // Set first photo as profile image automatically
@@ -72,3 +75,4 @@ router.post("/upload", userAuth, handlePhotoUpload, async (req, res) => {
 });
 
 module.exports = router;
+
