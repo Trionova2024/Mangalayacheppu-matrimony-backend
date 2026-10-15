@@ -5,6 +5,7 @@ const fs       = require("fs");
 const prisma   = require("../lib/prisma");
 const userAuth = require("../middleware/userAuth");
 const { validateAndCalculateAge, getAgeFromDob } = require("../utils/age");
+const { uploadToS3, deleteFromS3 } = require("../lib/s3");
 
 // ── Horoscope upload setup ─────────────────────────────────────────────────────
 // Extension is derived from the MIME type allow-list, never from the client's
@@ -14,19 +15,15 @@ const HOROSCOPE_TYPES = {
   "image/png":       ".png",
   "image/webp":      ".webp",
   "application/pdf": ".pdf",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
 };
 
 const uploadDir = path.join(__dirname, "../../", process.env.UPLOAD_DIR || "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const horoscopeUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadDir),
-    filename:    (_req, file, cb) => {
-      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-      cb(null, `horoscope-${unique}${HOROSCOPE_TYPES[file.mimetype]}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: (parseInt(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (HOROSCOPE_TYPES[file.mimetype]) return cb(null, true);
@@ -59,10 +56,15 @@ function handleHoroscopeUpload(req, res, next) {
   });
 }
 
-function removeUpload(url) {
+async function removeUpload(url) {
   if (!url) return;
-  fs.unlink(path.join(uploadDir, path.basename(url)), () => {});
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    await deleteFromS3(url);
+  } else {
+    fs.unlink(path.join(uploadDir, path.basename(url)), () => {});
+  }
 }
+
 
 // ── GET /api/profile/me  — Flutter: my profile screen ─────────────────────────
 router.get("/me", userAuth, async (req, res) => {
@@ -254,20 +256,32 @@ router.post("/horoscope", userAuth, handleHoroscopeUpload, async (req, res) => {
   }
   console.log("[horoscope] file:", { field: file.fieldname, originalname: file.originalname, mimetype: file.mimetype, size: file.size });
 
-  const url = `/uploads/${file.filename}`;
+  let url;
   try {
+    const s3Result = await uploadToS3({
+      buffer:       file.buffer,
+      userId:       req.user.id,
+      originalname: file.originalname,
+      mimetype:     file.mimetype,
+    });
+    url = s3Result.url;
+
     const existing = await prisma.personalProfile.findUnique({ where: { userId: req.user.id } });
     await prisma.personalProfile.upsert({
       where:  { userId: req.user.id },
       create: { userId: req.user.id, horoscopeUrl: url },
       update: { horoscopeUrl: url },
     });
-    removeUpload(existing?.horoscopeUrl);
+    if (existing?.horoscopeUrl) {
+      await removeUpload(existing.horoscopeUrl);
+    }
     console.log("[horoscope] saved:", url);
     res.json({ success: true, data: { horoscopeUrl: url } });
   } catch (err) {
     console.error("[horoscope] save failed:", err);
-    removeUpload(url);
+    if (url) {
+      await removeUpload(url);
+    }
     res.status(500).json({ message: err.message });
   }
 });
@@ -287,7 +301,7 @@ router.delete("/horoscope", userAuth, async (req, res) => {
     const oldUrl   = personal?.horoscopeUrl;
     if (oldUrl) {
       await prisma.personalProfile.update({ where: { userId: req.user.id }, data: { horoscopeUrl: null } });
-      removeUpload(oldUrl);
+      await removeUpload(oldUrl);
     }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ message: err.message }); }
