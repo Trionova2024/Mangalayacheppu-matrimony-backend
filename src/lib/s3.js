@@ -149,19 +149,24 @@ async function uploadToS3({ buffer, userId, originalname, mimetype, key: customK
     putParams.ACL = "public-read";
   }
 
+  console.log(`[S3] Uploading file to bucket="${bucket}", key="${key}", contentType="${putParams.ContentType}", size=${buffer.length} bytes`);
+
   try {
     await s3Client.send(new PutObjectCommand(putParams));
   } catch (err) {
     // If ACL was rejected because bucket has ACLs disabled (Bucket Owner Enforced), retry without ACL
     if (putParams.ACL && (err.name === "AccessControlListNotSupported" || String(err.message).includes("does not allow ACLs"))) {
+      console.warn(`[S3] Bucket does not allow ACLs, retrying without ACL...`);
       delete putParams.ACL;
       await s3Client.send(new PutObjectCommand(putParams));
     } else {
+      console.error(`[S3] PutObjectCommand failed for key "${key}":`, err.name, err.message);
       throw err;
     }
   }
 
   const url = getPublicUrl(key);
+  console.log(`[S3] Upload success: ${url}`);
   return { key, url, bucket };
 }
 
