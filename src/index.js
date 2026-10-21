@@ -46,7 +46,11 @@ const corsOptions = {
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf ? buf.toString("utf8") : "";
+  },
+}));
 
 // Request logging: method, path, status, duration
 app.use((req, res, next) => {
@@ -57,8 +61,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Global rate limiting across /api endpoints
-app.use("/api", generalLimiter);
+// Global rate limiting across /api endpoints (bypass for payment gateway webhooks)
+app.use("/api", (req, res, next) => {
+  if (req.path === "/packages/webhook" || req.path === "/packages/cashfree-webhook") {
+    return next();
+  }
+  return generalLimiter(req, res, next);
+});
 
 // Serve uploaded photos (gallery images)
 app.use("/uploads", express.static(path.join(__dirname, "..", process.env.UPLOAD_DIR || "uploads")));
