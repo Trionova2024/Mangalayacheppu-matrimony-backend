@@ -5,6 +5,7 @@ const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 const jwt       = require("jsonwebtoken");
 const { getAgeFromDob } = require("../utils/age");
+const { getPaymentProvider, isIapEnabled } = require("../config/paymentConfig");
 
 // ── Cashfree Payment Gateway (PG API v2026-01-01) ──────────────────────────────
 const CASHFREE_API_VERSION = process.env.CASHFREE_API_VERSION || "2026-01-01";
@@ -71,9 +72,16 @@ router.get("/", smartAuth, async (req, res) => {
     res.json({
       success: true,
       data: {
+        paymentProvider: getPaymentProvider(),
         packages: packages.map(p => ({
-          id: p.id, title: p.title || p.name, subtitle: p.subtitle || p.description,
-          price: p.price || Math.round(p.amount), contacts: p.credits, validityDays: p.validityDays,
+          id: p.id,
+          title: p.title || p.name,
+          subtitle: p.subtitle || p.description,
+          price: p.price || Math.round(p.amount),
+          contacts: p.credits,
+          validityDays: p.validityDays,
+          googlePlayProductId: p.googlePlayProductId || null,
+          appleProductId:      p.appleProductId || null,
         })),
         freeUser: {
           contacts: config?.defaultCredits || 3,
@@ -160,7 +168,15 @@ router.post("/create-order", userAuth, async (req, res) => {
       });
     }
 
-    // ── CASE B: NON-ZERO PACKAGE (Real Gateway Flow) ───────────────────────────
+    // ── CASE B: NON-ZERO PACKAGE ──────────────────────────────────────────────
+    if (isIapEnabled()) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment provider is configured for Google Play In-App Purchase. Please use the Google Play purchase flow.",
+        code: "IAP_PROVIDER_ACTIVE",
+      });
+    }
+
     const cf = getCashfreeConfig();
 
     if (!cf.appId || !cf.secretKey) {

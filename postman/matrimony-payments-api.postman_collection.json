@@ -1,0 +1,410 @@
+{
+  "info": {
+    "_postman_id": "matrimony-payments-iap-cashfree-v1",
+    "name": "Matrimony Payments API (IAP & Cashfree)",
+    "description": "Complete payment integration endpoints for Frontend Developers (Flutter iOS & Android):\n\n1. Payment Gateway Configuration\n2. Packages & Plan List\n3. Apple In-App Purchase (StoreKit 2 / Receipt Verification)\n4. Google Play In-App Purchase (Android Publisher API)\n5. Cashfree PG Flow\n6. Webhooks (Apple Server Notifications, Google Pub/Sub RTDN, Cashfree)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01. Get Payment Provider Config",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "config"
+          ]
+        },
+        "description": "Public endpoint. Call before checkout to determine whether the app should trigger IAP (Google Play / Apple) or Cashfree."
+      },
+      "response": [
+        {
+          "name": "Example Response - IAP Mode",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"provider\": \"IAP\",\n    \"isCashfree\": false,\n    \"isIap\": true,\n    \"isGooglePlay\": true,\n    \"isAppleIap\": true\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "02. Get Packages (with Store Product IDs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/packages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages"
+          ]
+        },
+        "description": "Returns active package plans with credit counts, price, and both `googlePlayProductId` and `appleProductId`."
+      },
+      "response": [
+        {
+          "name": "Example Response",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"paymentProvider\": \"IAP\",\n    \"packages\": [\n      {\n        \"id\": \"pkg-bronze\",\n        \"title\": \"Bronze\",\n        \"subtitle\": \"10 contact credits\",\n        \"price\": 299,\n        \"contacts\": 10,\n        \"validityDays\": 30,\n        \"googlePlayProductId\": \"sub_bronze_monthly\",\n        \"appleProductId\": \"com.trionova.bronze\"\n      }\n    ],\n    \"freeUser\": {\n      \"contacts\": 3,\n      \"validityDays\": 90,\n      \"description\": \"3 free contacts valid for 3 months\"\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "03. iOS - Verify Apple In-App Purchase",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"com.trionova.bronze\",\n  \"signedTransaction\": \"<PASTE_STOREKIT_2_JWS_STRING_OR_RECEIPT_HERE>\",\n  \"transactionId\": \"2000000582910241\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/apple/verify",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "apple",
+            "verify"
+          ]
+        },
+        "description": "Call from iOS after in_app_purchase completes. Verifies the Apple StoreKit 2 JWS token or base64 receipt with Apple, activates credits atomically."
+      },
+      "response": [
+        {
+          "name": "Success (200 OK)",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"status\": \"COMPLETED\",\n  \"message\": \"10 credits added to your account\",\n  \"data\": {\n    \"status\": \"COMPLETED\",\n    \"orderId\": \"2000000582910241\",\n    \"credits\": 10,\n    \"alreadyProcessed\": false,\n    \"package\": {\n      \"id\": \"pkg-bronze\",\n      \"title\": \"Bronze\",\n      \"price\": 299,\n      \"contacts\": 10,\n      \"validityDays\": 30\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "04. Android - Verify Google Play In-App Purchase",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"sub_bronze_monthly\",\n  \"purchaseToken\": \"<PASTE_GOOGLE_PURCHASE_TOKEN_HERE>\",\n  \"packageName\": \"com.trionova.matrimony\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/google-play/verify",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "google-play",
+            "verify"
+          ]
+        },
+        "description": "Call from Android after Google Play Billing completes. Verifies purchase directly with Google Android Publisher API, acknowledges/consumes it, and awards credits."
+      },
+      "response": [
+        {
+          "name": "Success (200 OK)",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"status\": \"COMPLETED\",\n  \"message\": \"10 credits added to your account\",\n  \"data\": {\n    \"status\": \"COMPLETED\",\n    \"orderId\": \"GPA.3312-5819-2041-98721\",\n    \"credits\": 10,\n    \"alreadyProcessed\": false,\n    \"package\": {\n      \"id\": \"pkg-bronze\",\n      \"title\": \"Bronze\",\n      \"price\": 299,\n      \"contacts\": 10,\n      \"validityDays\": 30\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "05. Cashfree - Create Order (Non-IAP Mode)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"packageId\": \"pkg-bronze\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/packages/create-order",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages",
+            "create-order"
+          ]
+        },
+        "description": "Used when PAYMENT_PROVIDER=CASHFREE. Creates a Cashfree order session. (Free offers with amount=0 activate immediately without gateway)."
+      },
+      "response": [
+        {
+          "name": "Success (200 OK)",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"orderId\": \"order_user123_1729580000000\",\n    \"paymentSessionId\": \"session_abcdef123456\",\n    \"environment\": \"sandbox\",\n    \"amount\": 29900,\n    \"currency\": \"INR\"\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "06. Cashfree - Verify Payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"order_user123_1729580000000\",\n  \"packageId\": \"pkg-bronze\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/packages/verify-payment",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages",
+            "verify-payment"
+          ]
+        },
+        "description": "Verifies Cashfree payment status after Cashfree mobile SDK returns success."
+      }
+    },
+    {
+      "name": "07. Cashfree - Cancel / Failed Payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"order_user123_1729580000000\",\n  \"packageId\": \"pkg-bronze\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/packages/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages",
+            "cancel"
+          ]
+        },
+        "description": "Records user-initiated cancellation so the transaction log reflects FAILED."
+      }
+    },
+    {
+      "name": "08. Webhook - Google Play Pub/Sub RTDN",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"message\": {\n    \"data\": \"eyJ2ZXJzaW9uIjoiMS4wIiwicGFja2FnZU5hbWUiOiJjb20udHJpb25vdmEubWF0cmltb255IiwidGVzdE5vdGlmaWNhdGlvbiI6eyJ2ZXJzaW9uIjoiMS4wIn19\",\n    \"messageId\": \"msg_12345\",\n    \"publishTime\": \"2026-10-22T10:00:00Z\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/google-play/notifications?token={{pubsubVerificationToken}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "google-play",
+            "notifications"
+          ],
+          "query": [
+            {
+              "key": "token",
+              "value": "{{pubsubVerificationToken}}"
+            }
+          ]
+        },
+        "description": "Configured in Google Cloud Pub/Sub Push Subscription. Handles subscription renewals, cancellations, and revocations."
+      }
+    },
+    {
+      "name": "09. Webhook - Apple App Store Server Notifications v2",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"signedPayload\": \"<APPLE_JWS_SIGNED_PAYLOAD>\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/apple/notifications",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "apple",
+            "notifications"
+          ]
+        },
+        "description": "Configured in App Store Connect under Server Notifications v2."
+      }
+    },
+    {
+      "name": "10. Webhook - Cashfree PG Webhook",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "x-webhook-timestamp",
+            "value": "1729580000000",
+            "type": "text"
+          },
+          {
+            "key": "x-webhook-signature",
+            "value": "<HMAC_SHA256_BASE64_SIGNATURE>",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"PAYMENT_SUCCESS_WEBHOOK\",\n  \"data\": {\n    \"order\": {\n      \"order_id\": \"order_user123_1729580000000\",\n      \"order_amount\": 299,\n      \"order_tags\": {\n        \"userId\": \"{{userId}}\",\n        \"packageId\": \"pkg-bronze\"\n      }\n    },\n    \"payment\": {\n      \"cf_payment_id\": \"12345678\",\n      \"payment_status\": \"SUCCESS\"\n    }\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/packages/cashfree-webhook",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages",
+            "cashfree-webhook"
+          ]
+        },
+        "description": "Configured in Cashfree Merchant Dashboard under Developers > Webhooks."
+      }
+    }
+  ]
+}
