@@ -5,6 +5,33 @@ const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 const jwt       = require("jsonwebtoken");
 const { getAgeFromDob } = require("../utils/age");
+const { getPaymentProvider, isIapEnabled } = require("../config/paymentConfig");
+
+// ── Cashfree Payment Gateway (PG API v2026-01-01) ──────────────────────────────
+const CASHFREE_API_VERSION = process.env.CASHFREE_API_VERSION || "2026-01-01";
+
+function getCashfreeConfig() {
+  const appId     = process.env.CASHFREE_APP_ID || "";
+  const secretKey = process.env.CASHFREE_SECRET_KEY || "";
+  const env       = process.env.CASHFREE_ENV === "production" ? "production" : "sandbox";
+  const baseUrl   = env === "production" ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
+  return { appId, secretKey, env, baseUrl };
+}
+
+async function cashfreeRequest(cf, method, path, body) {
+  const res = await fetch(`${cf.baseUrl}${path}`, {
+    method,
+    headers: {
+      "Content-Type":    "application/json",
+      "x-client-id":     cf.appId,
+      "x-client-secret": cf.secretKey,
+      "x-api-version":   CASHFREE_API_VERSION,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, data };
+}
 
 // ── Smart auth middleware: detects admin vs flutter token ──────────────────────
 async function smartAuth(req, res, next) {
@@ -45,9 +72,16 @@ router.get("/", smartAuth, async (req, res) => {
     res.json({
       success: true,
       data: {
+        paymentProvider: getPaymentProvider(),
         packages: packages.map(p => ({
-          id: p.id, title: p.title || p.name, subtitle: p.subtitle || p.description,
-          price: p.price || Math.round(p.amount), contacts: p.credits, validityDays: p.validityDays,
+          id: p.id,
+          title: p.title || p.name,
+          subtitle: p.subtitle || p.description,
+          price: p.price || Math.round(p.amount),
+          contacts: p.credits,
+          validityDays: p.validityDays,
+          googlePlayProductId: p.googlePlayProductId || null,
+          appleProductId:      p.appleProductId || null,
         })),
         freeUser: {
           contacts: config?.defaultCredits || 3,
@@ -134,48 +168,54 @@ router.post("/create-order", userAuth, async (req, res) => {
       });
     }
 
-    // ── CASE B: NON-ZERO PACKAGE (Real Gateway Flow) ───────────────────────────
-    const config = await prisma.appConfig.findUnique({ where: { id: "singleton" } });
-    const keyId  = config?.razorpayKeyId || process.env.RAZORPAY_KEY_ID || "";
-    const secret = config?.razorpaySecret || process.env.RAZORPAY_KEY_SECRET || "";
+    // ── CASE B: NON-ZERO PACKAGE ──────────────────────────────────────────────
+    if (isIapEnabled()) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment provider is configured for Google Play In-App Purchase. Please use the Google Play purchase flow.",
+        code: "IAP_PROVIDER_ACTIVE",
+      });
+    }
 
-    if (!keyId || !secret) {
+    const cf = getCashfreeConfig();
+
+    if (!cf.appId || !cf.secretKey) {
       return res.status(500).json({
         success: false,
         message: "Payment gateway configuration is missing",
       });
     }
 
-    // Create real Razorpay order via Razorpay REST API
+    // Create real Cashfree order via Cashfree PG REST API
     let orderId;
+    let paymentSessionId;
     try {
-      const auth = Buffer.from(`${keyId}:${secret}`).toString("base64");
-      const rzpRes = await fetch("https://api.razorpay.com/v1/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type":  "application/json",
-          "Authorization": `Basic ${auth}`,
+      const mobileDigits = String(req.user.mobile || "").replace(/\D/g, "").slice(-10);
+      const { ok, data: cfData } = await cashfreeRequest(cf, "POST", "/orders", {
+        order_id:       `order_${req.user.id.replace(/-/g, "").slice(0, 8)}_${Date.now()}`,
+        order_amount:   Number(pkg.amount.toFixed(2)), // rupees (not paise)
+        order_currency: "INR",
+        customer_details: {
+          customer_id:    req.user.id,
+          customer_phone: mobileDigits,
+          ...(req.user.email && { customer_email: req.user.email }),
+          ...(req.user.name  && { customer_name:  req.user.name }),
         },
-        body: JSON.stringify({
-          amount:   Math.round(pkg.amount * 100), // paise
-          currency: "INR",
-          receipt:  `rcpt_${req.user.id.slice(0, 8)}_${Date.now()}`,
-          notes: {
-            userId:    req.user.id,
-            packageId: pkg.id,
-          },
-        }),
+        order_tags: {
+          userId:    req.user.id,
+          packageId: pkg.id,
+        },
       });
 
-      const rzpData = await rzpRes.json();
-      if (!rzpRes.ok || !rzpData.id) {
+      if (!ok || !cfData.order_id || !cfData.payment_session_id) {
         return res.status(502).json({
           success: false,
           message: "Failed to create payment order with gateway",
-          error:   rzpData.error?.description || "Gateway error",
+          error:   cfData.message || "Gateway error",
         });
       }
-      orderId = rzpData.id;
+      orderId          = cfData.order_id;
+      paymentSessionId = cfData.payment_session_id;
     } catch (netErr) {
       return res.status(502).json({
         success: false,
@@ -187,9 +227,10 @@ router.post("/create-order", userAuth, async (req, res) => {
       success: true,
       data: {
         orderId,
+        paymentSessionId,
+        environment: cf.env,
         amount:   Math.round(pkg.amount * 100),
         currency: "INR",
-        keyId,
         package: {
           id: pkg.id, title: pkg.title || pkg.name, subtitle: pkg.subtitle,
           price: pkg.price || Math.round(pkg.amount), contacts: pkg.credits, validityDays: pkg.validityDays,
@@ -202,7 +243,7 @@ router.post("/create-order", userAuth, async (req, res) => {
 // ── Flutter: POST /api/packages/verify-payment ────────────────────────────────
 router.post("/verify-payment", userAuth, async (req, res) => {
   try {
-    const { orderId, paymentId, signature, packageId, status, error } = req.body;
+    const { orderId, paymentId, packageId, status, error } = req.body;
 
     if (!packageId) {
       return res.status(400).json({
@@ -269,9 +310,9 @@ router.post("/verify-payment", userAuth, async (req, res) => {
             userId:            req.user.id,
             packageId:         pkg.id,
             amount:            pkg.amount,
-            paymentMethod:     "RAZORPAY",
-            razorpayOrderId:   orderId   || null,
-            razorpayPaymentId: paymentId || null,
+            paymentMethod:     "CASHFREE",
+            paymentOrderId:    orderId   || null,
+            paymentId:         paymentId ? String(paymentId) : null,
             status:            "FAILED",
           },
         });
@@ -289,9 +330,9 @@ router.post("/verify-payment", userAuth, async (req, res) => {
     }
 
     // ── Check duplicate payment (idempotency) ─────────────────────────────────
-    if (paymentId) {
+    if (orderId) {
       const existingCompleted = await prisma.transaction.findFirst({
-        where: { razorpayPaymentId: paymentId, status: "COMPLETED" },
+        where: { paymentOrderId:  orderId, status: "COMPLETED" },
       });
       if (existingCompleted) {
         return res.json({
@@ -306,11 +347,10 @@ router.post("/verify-payment", userAuth, async (req, res) => {
       }
     }
 
-    // ── Signature Verification ────────────────────────────────────────────────
-    const config = await prisma.appConfig.findUnique({ where: { id: "singleton" } });
-    const secret = config?.razorpaySecret || process.env.RAZORPAY_KEY_SECRET || "";
+    // ── Server-side verification with Cashfree ────────────────────────────────
+    const cf = getCashfreeConfig();
 
-    if (!secret) {
+    if (!cf.appId || !cf.secretKey) {
       return res.status(500).json({
         success: false,
         status:  "FAILED",
@@ -319,11 +359,11 @@ router.post("/verify-payment", userAuth, async (req, res) => {
       });
     }
 
-    if (!orderId || !paymentId || !signature) {
+    if (!orderId) {
       return res.status(400).json({
         success: false,
         status:  "FAILED",
-        message: "Missing payment verification parameters (orderId, paymentId, signature required)",
+        message: "Missing payment verification parameters (orderId required)",
         data: {
           status:  "FAILED",
           message: "Missing payment verification parameters",
@@ -331,18 +371,104 @@ router.post("/verify-payment", userAuth, async (req, res) => {
       });
     }
 
-    const expected = crypto.createHmac("sha256", secret).update(`${orderId}|${paymentId}`).digest("hex");
-    if (expected !== signature) {
-      // Record failed transaction
+    // Fetch order + payments directly from Cashfree (with retry buffer if order is still ACTIVE)
+    let cfOrder;
+    let successPayment;
+    try {
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        // Check if the webhook completed it while waiting
+        const completedInDb = await prisma.transaction.findFirst({
+          where: { paymentOrderId: orderId, status: "COMPLETED" },
+        });
+        if (completedInDb) {
+          return res.json({
+            success: true,
+            status:  "COMPLETED",
+            message: `${pkg.credits} credits added to your account`,
+            data: {
+              status:           "COMPLETED",
+              credits:          pkg.credits,
+              alreadyProcessed: true,
+            },
+          });
+        }
+
+        const orderRes = await cashfreeRequest(cf, "GET", `/orders/${encodeURIComponent(orderId)}`);
+        if (!orderRes.ok) {
+          return res.status(400).json({
+            success: false,
+            status:  "FAILED",
+            message: "Payment verification failed: order not found",
+            data:    { status: "FAILED", message: "Payment verification failed" },
+          });
+        }
+        cfOrder = orderRes.data;
+
+        const paymentsRes = await cashfreeRequest(cf, "GET", `/orders/${encodeURIComponent(orderId)}/payments`);
+        if (paymentsRes.ok && Array.isArray(paymentsRes.data)) {
+          successPayment = paymentsRes.data.find(p => p.payment_status === "SUCCESS");
+        }
+
+        // If Cashfree confirmed PAID, proceed immediately to credit
+        if (cfOrder.order_status === "PAID") break;
+
+        // If order has permanently expired or terminated, stop retrying
+        if (cfOrder.order_status !== "ACTIVE") break;
+
+        // Wait 2 seconds before checking Cashfree again if order is still ACTIVE
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (netErr) {
+      return res.status(502).json({
+        success: false,
+        status:  "FAILED",
+        message: "Payment gateway network error",
+        data:    { status: "FAILED", message: "Payment gateway network error" },
+      });
+    }
+
+    const cfPaymentId = successPayment?.cf_payment_id != null ? String(successPayment.cf_payment_id) : (paymentId ? String(paymentId) : null);
+    const orderMatches =
+      cfOrder.customer_details?.customer_id === req.user.id &&
+      (!cfOrder.order_tags?.packageId || cfOrder.order_tags.packageId === pkg.id) &&
+      Math.abs(Number(cfOrder.order_amount) - pkg.amount) < 0.01;
+
+    if (!orderMatches) {
+      return res.status(400).json({
+        success: false,
+        status:  "FAILED",
+        message: "Payment verification failed: order does not match this user or package",
+        data:    { status: "FAILED", message: "Payment verification failed" },
+      });
+    }
+
+    if (cfOrder.order_status !== "PAID") {
+      // Still ACTIVE (bank confirmation in transit) → return PENDING, don't fail!
+      if (cfOrder.order_status === "ACTIVE") {
+        return res.status(200).json({
+          success: true,
+          status:  "PENDING",
+          message: "Payment is being confirmed by the bank. Your credits will update in a moment.",
+          data: {
+            status:  "PENDING",
+            orderId: orderId,
+            message: "Payment pending bank confirmation",
+          },
+        });
+      }
+
+      // Order has permanently failed / expired / terminated
       await prisma.transaction.create({
         data: {
           userId:            req.user.id,
           packageId:         pkg.id,
           amount:            pkg.amount,
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId,
-          razorpayPaymentId: paymentId,
-          razorpaySignature: signature,
+          paymentMethod:     "CASHFREE",
+          paymentOrderId:    orderId,
+          paymentId:         cfPaymentId,
           status:            "FAILED",
         },
       });
@@ -350,7 +476,7 @@ router.post("/verify-payment", userAuth, async (req, res) => {
       return res.status(400).json({
         success: false,
         status:  "FAILED",
-        message: "Payment verification failed: invalid signature",
+        message: "Payment verification failed: payment not completed",
         data: {
           status:  "FAILED",
           message: "Payment verification failed",
@@ -359,31 +485,43 @@ router.post("/verify-payment", userAuth, async (req, res) => {
     }
 
     // ── Atomic Transaction & Credit Allocation ────────────────────────────────
-    await prisma.$transaction(async (tx) => {
-      // Re-verify duplicate within transaction lock
-      const alreadyDone = await tx.transaction.findFirst({
-        where: { razorpayPaymentId: paymentId, status: "COMPLETED" },
-      });
-      if (alreadyDone) return;
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Re-verify duplicate within transaction lock
+        const alreadyDone = await tx.transaction.findFirst({
+          where: { paymentOrderId:  orderId, status: "COMPLETED" },
+        });
+        if (alreadyDone) return;
 
-      await tx.transaction.create({
-        data: {
-          userId:            req.user.id,
-          packageId:         pkg.id,
-          amount:            pkg.amount, // strictly from DB
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId,
-          razorpayPaymentId: paymentId,
-          razorpaySignature: signature,
-          status:            "COMPLETED",
-        },
-      });
+        await tx.transaction.create({
+          data: {
+            userId:            req.user.id,
+            packageId:         pkg.id,
+            amount:            pkg.amount, // strictly from DB
+            paymentMethod:     "CASHFREE",
+            paymentOrderId:    orderId,
+            paymentId:         cfPaymentId,
+            status:            "COMPLETED",
+          },
+        });
 
-      await tx.user.update({
-        where: { id: req.user.id },
-        data:  { credits: { increment: pkg.credits } }, // strictly from DB
+        await tx.user.update({
+          where: { id: req.user.id },
+          data:  { credits: { increment: pkg.credits } }, // strictly from DB
+        });
       });
-    });
+    } catch (err) {
+      // Concurrent verify for the same order hit the unique index → already credited
+      if (err.code === "P2002" || err.message?.includes("uq_payment_order_completed")) {
+        return res.json({
+          success: true,
+          status:  "COMPLETED",
+          message: "Payment already processed",
+          data:    { status: "COMPLETED", alreadyProcessed: true },
+        });
+      }
+      throw err;
+    }
 
     res.json({
       success: true,
@@ -412,9 +550,9 @@ router.post("/payment-failed", userAuth, async (req, res) => {
           userId:            req.user.id,
           packageId:         pkg?.id || null,
           amount:            pkg?.amount || 0,
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId   || null,
-          razorpayPaymentId: paymentId || null,
+          paymentMethod:     "CASHFREE",
+          paymentOrderId:    orderId   || null,
+          paymentId:         paymentId ? String(paymentId) : null,
           status:            "FAILED",
         },
       });
@@ -447,8 +585,8 @@ router.post("/cancel", userAuth, async (req, res) => {
           userId:          req.user.id,
           packageId:       pkg?.id || null,
           amount:          pkg?.amount || 0,
-          paymentMethod:   "RAZORPAY",
-          razorpayOrderId: orderId || null,
+          paymentMethod:   "CASHFREE",
+          paymentOrderId:  orderId || null,
           status:          "FAILED",
         },
       });
@@ -465,6 +603,268 @@ router.post("/cancel", userAuth, async (req, res) => {
     });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
+
+// ── Webhook Signature Verification ─────────────────────────────────────────────
+function verifyCashfreeWebhookSignature(req) {
+  const signature = req.headers["x-webhook-signature"];
+  const timestamp = req.headers["x-webhook-timestamp"];
+  const rawBody   = req.rawBody != null ? req.rawBody : (req.body ? JSON.stringify(req.body) : "");
+  const cf        = getCashfreeConfig();
+
+  const secretCandidates = [
+    process.env.CASHFREE_WEBHOOK_SECRET,
+    cf.secretKey,
+  ].filter(Boolean);
+
+  if (!signature || !timestamp || !rawBody) {
+    return { valid: false, reason: "Missing x-webhook-signature, x-webhook-timestamp, or raw request body" };
+  }
+
+  if (secretCandidates.length === 0) {
+    return { valid: false, reason: "Cashfree secret key is not configured on the server" };
+  }
+
+  // Prevent replay attacks (allow 5 min clock drift)
+  const tsNum = Number(timestamp);
+  if (!Number.isNaN(tsNum)) {
+    const tsMs = tsNum < 1e12 ? tsNum * 1000 : tsNum;
+    if (Math.abs(Date.now() - tsMs) > 5 * 60 * 1000) {
+      return { valid: false, reason: "Webhook timestamp expired (older than 5 minutes)" };
+    }
+  }
+
+  const signedPayload = `${timestamp}${rawBody}`;
+  const sigBuffer = Buffer.from(signature, "utf8");
+
+  for (const secret of secretCandidates) {
+    try {
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(signedPayload)
+        .digest("base64");
+      const expBuffer = Buffer.from(expected, "utf8");
+
+      if (sigBuffer.length === expBuffer.length && crypto.timingSafeEqual(sigBuffer, expBuffer)) {
+        return { valid: true };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return { valid: false, reason: "Webhook signature verification failed" };
+}
+
+// ── Cashfree Webhook Handler ──────────────────────────────────────────────────
+async function handleCashfreeWebhook(req, res) {
+  try {
+    // 1. Verify Cashfree Webhook Signature
+    const verification = verifyCashfreeWebhookSignature(req);
+    if (!verification.valid) {
+      console.warn(`[Cashfree Webhook] Verification rejected: ${verification.reason}`);
+      return res.status(400).json({ success: false, message: verification.reason });
+    }
+
+    const event = req.body || {};
+    const eventType = (event.type || "").toUpperCase();
+    const eventData = event.data || {};
+    const orderData = eventData.order || {};
+    const paymentData = eventData.payment || {};
+    const customerData = eventData.customer_details || {};
+
+    // ── Handle Cashfree Dashboard Test Ping ───────────────────────────────────
+    if (eventType === "WEBHOOK" || eventType === "TEST" || eventData.test_object) {
+      return res.status(200).json({
+        success: true,
+        message: "Cashfree test webhook verified and acknowledged",
+      });
+    }
+
+    const orderId = orderData.order_id || eventData.order_id || event.order_id;
+    const cfPaymentId = paymentData.cf_payment_id != null ? String(paymentData.cf_payment_id) : null;
+    const paymentStatus = (paymentData.payment_status || "").toUpperCase();
+
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: "Missing order_id in webhook payload" });
+    }
+
+    const isSuccess =
+      eventType === "PAYMENT_SUCCESS_WEBHOOK" ||
+      eventType === "ORDER_PAID_WEBHOOK" ||
+      paymentStatus === "SUCCESS";
+
+    const isFailure =
+      eventType === "PAYMENT_FAILED_WEBHOOK" ||
+      eventType === "PAYMENT_USER_DROPPED_WEBHOOK" ||
+      paymentStatus === "FAILED" ||
+      paymentStatus === "USER_DROPPED";
+
+    // ── CASE 1: PAYMENT SUCCESS ───────────────────────────────────────────────
+    if (isSuccess) {
+      // Idempotency check: already completed
+      const existingTx = await prisma.transaction.findFirst({
+        where: { paymentOrderId: orderId, status: "COMPLETED" },
+      });
+      if (existingTx) {
+        return res.status(200).json({
+          success: true,
+          status:  "COMPLETED",
+          message: "Payment already processed",
+          orderId,
+          alreadyProcessed: true,
+        });
+      }
+
+      const orderTags = orderData.order_tags || {};
+      let userId = orderTags.userId || customerData.customer_id;
+      let packageId = orderTags.packageId;
+
+      // Fallback: If tags are missing from webhook payload, query Cashfree API for order details
+      if (!userId || !packageId) {
+        try {
+          const cf = getCashfreeConfig();
+          const orderRes = await cashfreeRequest(cf, "GET", `/orders/${encodeURIComponent(orderId)}`);
+          if (orderRes.ok && orderRes.data) {
+            userId    = userId || orderRes.data.customer_details?.customer_id || orderRes.data.order_tags?.userId;
+            packageId = packageId || orderRes.data.order_tags?.packageId;
+          }
+        } catch (fetchErr) {
+          console.warn("[Cashfree Webhook] Could not fetch order details from Cashfree:", fetchErr.message);
+        }
+      }
+
+      if (!userId) {
+        console.error(`[Cashfree Webhook] Could not determine userId for order ${orderId}`);
+        return res.status(200).json({ success: false, message: "User not found for this order" });
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) {
+        console.error(`[Cashfree Webhook] User ${userId} not found in database`);
+        return res.status(200).json({ success: false, message: "User not found in database" });
+      }
+
+      let pkg = null;
+      if (packageId) {
+        pkg = await prisma.package.findUnique({ where: { id: packageId } });
+      }
+      if (!pkg && orderData.order_amount != null) {
+        pkg = await prisma.package.findFirst({
+          where: { amount: Number(orderData.order_amount), status: "ACTIVE" },
+        });
+      }
+
+      if (!pkg) {
+        console.error(`[Cashfree Webhook] Package not found for order ${orderId}`);
+        return res.status(200).json({ success: false, message: "Package not found" });
+      }
+
+      // Atomic allocation & credit
+      try {
+        await prisma.$transaction(async (tx) => {
+          const alreadyDone = await tx.transaction.findFirst({
+            where: { paymentOrderId: orderId, status: "COMPLETED" },
+          });
+          if (alreadyDone) return;
+
+          await tx.transaction.create({
+            data: {
+              userId:         user.id,
+              packageId:      pkg.id,
+              amount:         pkg.amount, // strictly from DB
+              paymentMethod:  "CASHFREE",
+              paymentOrderId: orderId,
+              paymentId:      cfPaymentId,
+              status:         "COMPLETED",
+            },
+          });
+
+          await tx.user.update({
+            where: { id: user.id },
+            data:  { credits: { increment: pkg.credits } }, // strictly from DB
+          });
+        });
+      } catch (err) {
+        if (err.code === "P2002" || err.message?.includes("uq_payment_order_completed")) {
+          return res.status(200).json({
+            success: true,
+            status:  "COMPLETED",
+            message: "Payment already processed",
+            alreadyProcessed: true,
+          });
+        }
+        throw err;
+      }
+
+      return res.status(200).json({
+        success: true,
+        status:  "COMPLETED",
+        message: `${pkg.credits} credits added to user account`,
+        orderId,
+      });
+    }
+
+    // ── CASE 2: PAYMENT FAILED / CANCELLED / DROPPED ─────────────────────────
+    if (isFailure) {
+      const existingCompleted = await prisma.transaction.findFirst({
+        where: { paymentOrderId: orderId, status: "COMPLETED" },
+      });
+      if (existingCompleted) {
+        return res.status(200).json({
+          success: true,
+          message: "Order already completed; failure event ignored",
+        });
+      }
+
+      const orderTags = orderData.order_tags || {};
+      const userId = orderTags.userId || customerData.customer_id;
+      const packageId = orderTags.packageId;
+
+      let pkg = null;
+      if (packageId) {
+        pkg = await prisma.package.findUnique({ where: { id: packageId } });
+      }
+
+      const existingFailed = await prisma.transaction.findFirst({
+        where: { paymentOrderId: orderId, status: "FAILED" },
+      });
+
+      if (!existingFailed && userId) {
+        await prisma.transaction.create({
+          data: {
+            userId,
+            packageId:      pkg?.id || null,
+            amount:         pkg?.amount || Number(orderData.order_amount || 0),
+            paymentMethod:  "CASHFREE",
+            paymentOrderId: orderId,
+            paymentId:      cfPaymentId,
+            status:         "FAILED",
+          },
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        status:  "FAILED",
+        message: "Payment failure recorded",
+        orderId,
+      });
+    }
+
+    // ── Other event types ────────────────────────────────────────────────────
+    return res.status(200).json({
+      success: true,
+      message: `Webhook event ${eventType || "UNKNOWN"} acknowledged`,
+    });
+  } catch (err) {
+    console.error("[Cashfree Webhook Error]:", err);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+
+// Public Cashfree Webhook endpoints (no user auth required; secured by signature verification)
+router.post("/webhook", handleCashfreeWebhook);
+router.post("/cashfree-webhook", handleCashfreeWebhook);
 
 // ── Admin routes ───────────────────────────────────────────────────────────────
 router.get("/stats", adminAuth, async (_req, res) => {

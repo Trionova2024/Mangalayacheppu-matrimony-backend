@@ -10,7 +10,7 @@ cd /var/www/matrimony-backend-v2
 # Install dependencies
 npm install
 
-# Copy production env (EDIT THIS FILE FIRST with your Razorpay keys + EC2 IP)
+# Copy production env (EDIT THIS FILE FIRST with your Cashfree keys + EC2 IP)
 cp .env.production .env
 
 # Push DB schema
