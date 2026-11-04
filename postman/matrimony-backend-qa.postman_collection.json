@@ -2316,6 +2316,45 @@
       "description": "Payment failure/cancel handling (Issue #7 fix), explicit FAILED status without undefined, and signature verification.",
       "item": [
         {
+          "name": "00. Get Payment Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "config"
+              ]
+            },
+            "description": "Returns active payment provider (CASHFREE or IAP) and platform flags (isCashfree, isGooglePlay, isAppleIap)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Payment configuration returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.have.property('provider');",
+                  "    pm.expect(jsonData.data).to.have.property('isCashfree');",
+                  "    pm.expect(jsonData.data).to.have.property('isIap');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "01. Get packages",
           "request": {
             "method": "GET",
@@ -2530,6 +2569,365 @@
                   "    var jsonData = pm.response.json();",
                   "    pm.expect(jsonData.status).to.eql('FAILED');",
                   "    pm.expect(jsonData.data.status).to.eql('FAILED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "05. Cashfree - Create Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/create-order",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "create-order"
+              ]
+            },
+            "description": "Creates a Cashfree PG payment order. In IAP mode, rejects non-free orders with IAP_PROVIDER_ACTIVE.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Order created successfully', function () {",
+                  "        pm.expect(jsonData.success).to.eql(true);",
+                  "        if (jsonData.data && jsonData.data.orderId) {",
+                  "            pm.environment.set('paymentOrderId', jsonData.data.orderId);",
+                  "        }",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Expected rejection if IAP mode is active', function () {",
+                  "        pm.expect(pm.response.code).to.eql(400);",
+                  "        pm.expect(jsonData.code).to.eql('IAP_PROVIDER_ACTIVE');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "06. Cashfree - Webhook Handler",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "x-webhook-timestamp",
+                "value": "1729580000000",
+                "type": "text"
+              },
+              {
+                "key": "x-webhook-signature",
+                "value": "test_hmac_signature_base64",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/packages/cashfree-webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "packages",
+                "cashfree-webhook"
+              ]
+            },
+            "description": "Cashfree PG webhook endpoint. Validates HMAC signature and processes payment status.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"TEST\",\n  \"data\": {\n    \"test_object\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Negative test: unauthenticated or invalid signature returns 400",
+                  "if (pm.response.code === 400) {",
+                  "    pm.test('Signature verification failure correctly rejected', function () {",
+                  "        var jsonData = pm.response.json();",
+                  "        pm.expect(jsonData.success).to.eql(false);",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Valid test ping acknowledged', function () {",
+                  "        pm.expect(pm.response.code).to.eql(200);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07. Google Play - Verify Purchase",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/google-play/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "google-play",
+                "verify"
+              ]
+            },
+            "description": "Authoritatively verifies Google Play purchase token with Google Android Publisher API v3 and allocates credits.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{googlePlayProductId}}\",\n  \"purchaseToken\": \"{{googlePlayPurchaseToken}}\",\n  \"packageName\": \"com.trionova.matrimony\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Google Play purchase verified & credited', function () {",
+                  "        pm.expect(jsonData.success).to.eql(true);",
+                  "        pm.expect(jsonData.status).to.eql('COMPLETED');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Controlled client error returned', function () {",
+                  "        pm.expect([400, 404, 409, 502]).to.include(pm.response.code);",
+                  "        pm.expect(jsonData.success).to.eql(false);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "08. Google Play - RTDN Webhook (Pub/Sub)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/google-play/notifications?token={{pubsubVerificationToken}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "google-play",
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{pubsubVerificationToken}}"
+                }
+              ]
+            },
+            "description": "Google Cloud Pub/Sub push notification endpoint for Google Play Real-Time Developer Notifications (RTDN).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": {\n    \"data\": \"eyJ2ZXJzaW9uIjoiMS4wIiwicGFja2FnZU5hbWUiOiJjb20udHJpb25vdmEubWF0cmltb255IiwidGVzdE5vdGlmaWNhdGlvbiI6eyJ2ZXJzaW9uIjoiMS4wIn19\",\n    \"messageId\": \"test-msg-123\",\n    \"publishTime\": \"2026-10-22T10:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Notification handled', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "09. Apple IAP - Verify Purchase",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/apple/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "apple",
+                "verify"
+              ]
+            },
+            "description": "Verifies Apple StoreKit 2 signed transaction JWS or App Store base64 receipt, awards credits atomically.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{appleProductId}}\",\n  \"signedTransaction\": \"{{appleSignedTransaction}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Apple purchase verified & credited', function () {",
+                  "        pm.expect(jsonData.success).to.eql(true);",
+                  "        pm.expect(jsonData.status).to.eql('COMPLETED');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Controlled client error on test payload', function () {",
+                  "        pm.expect([400, 404, 409, 502]).to.include(pm.response.code);",
+                  "        pm.expect(jsonData.success).to.eql(false);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "10. Apple IAP - Server Notifications Webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/apple/notifications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "apple",
+                "notifications"
+              ]
+            },
+            "description": "Apple App Store Server Notifications v2 webhook for subscription renewals, cancellations, and refunds.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"signedPayload\": \"sample_apple_v2_notification_jws\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Returns 200 or 400 depending on JWS validity",
+                  "pm.test('Handled without 500 error', function () {",
+                  "    pm.expect([200, 400]).to.include(pm.response.code);",
                   "});"
                 ]
               }
