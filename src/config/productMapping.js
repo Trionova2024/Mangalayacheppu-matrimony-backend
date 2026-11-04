@@ -91,6 +91,11 @@ async function resolvePackageByGoogleProductId(googlePlayProductId) {
 /**
  * Determines whether a Google Play product is a subscription or a one-time product.
  * Returns "SUBSCRIPTION" or "INAPP".
+ *
+ * Packages are sold as one-time (consumable) products, so every product is "INAPP" unless it
+ * is explicitly listed as a subscription in GOOGLE_PLAY_PRODUCT_TYPES. The product ID is never
+ * used to guess: IDs are generated from package names, and a name like "Monthly Pack" must
+ * not turn a one-time product into a subscription.
  */
 function determineProductType(googlePlayProductId) {
   const envTypesRaw = process.env.GOOGLE_PLAY_PRODUCT_TYPES; // JSON: {"prod_id": "SUBSCRIPTION"|"INAPP"}
@@ -98,17 +103,12 @@ function determineProductType(googlePlayProductId) {
     try {
       const types = JSON.parse(envTypesRaw);
       if (types[googlePlayProductId]) {
-        return types[googlePlayProductId].toUpperCase();
+        return String(types[googlePlayProductId]).toUpperCase();
       }
     } catch {}
   }
 
-  // Convention-based detection
-  const lower = String(googlePlayProductId || "").toLowerCase();
-  if (lower.startsWith("sub_") || lower.includes("sub") || lower.includes("monthly") || lower.includes("yearly") || lower.includes("annual")) {
-    return "SUBSCRIPTION";
-  }
-  return "INAPP"; // default to consumable in-app product for credits
+  return "INAPP";
 }
 
 function getEnvAppleProductMapping() {

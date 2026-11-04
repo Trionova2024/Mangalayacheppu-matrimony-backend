@@ -13,9 +13,10 @@ npm install
 # Copy production env (EDIT THIS FILE FIRST with your Google Play / Apple IAP credentials + EC2 IP)
 cp .env.production .env
 
-# Push DB schema
+# Apply DB migrations (not "db push": migrations carry data copies and partial unique
+# indexes that keep purchases from being credited twice)
 npx prisma generate
-npx prisma db push
+npx prisma migrate deploy
 
 # Seed admin + sample data
 node src/lib/seed.js

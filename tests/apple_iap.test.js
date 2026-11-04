@@ -13,6 +13,7 @@ const express = require("express");
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test_jwt_secret_min_32_characters_long!";
 process.env.APPLE_BUNDLE_ID = "com.trionova.matrimony";
+process.env.APPLE_IAP_ENABLED = "true";
 
 const prisma = require("../src/lib/prisma");
 const { setMockAppleClient } = require("../src/services/appleIapService");

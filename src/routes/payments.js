@@ -1,5 +1,6 @@
 const router   = require("express").Router();
 const userAuth = require("../middleware/userAuth");
+const { isAppleIapEnabled } = require("../config/paymentConfig");
 const {
   verifyGooglePlayPurchase,
   recordGooglePlayVerificationFailure,
@@ -22,7 +23,7 @@ router.get("/config", (req, res) => {
       provider:     "IAP",
       isIap:        true,
       isGooglePlay: true,
-      isAppleIap:   true,
+      isAppleIap:   isAppleIapEnabled(),
     },
   });
 });
@@ -141,9 +142,21 @@ router.post("/google-play/failed", userAuth, async (req, res) => {
   }
 });
 
+// Apple endpoints respond 404 unless APPLE_IAP_ENABLED=true
+function requireAppleIap(req, res, next) {
+  if (isAppleIapEnabled()) return next();
+  return res.status(404).json({
+    success: false,
+    status:  "FAILED",
+    code:    "APPLE_IAP_DISABLED",
+    message: "Apple In-App Purchase is not enabled",
+    data:    { status: "FAILED", code: "APPLE_IAP_DISABLED", message: "Apple In-App Purchase is not enabled" },
+  });
+}
+
 // ── POST /api/payments/apple/verify ───────────────────────────────────────────
 // Authenticated user verifies purchase with Apple App Store (iOS)
-router.post("/apple/verify", userAuth, async (req, res) => {
+router.post("/apple/verify", requireAppleIap, userAuth, async (req, res) => {
   try {
     const { productId, receiptData, signedTransaction, transactionId } = req.body || {};
 
@@ -197,7 +210,7 @@ router.post("/apple/verify", userAuth, async (req, res) => {
 
 // ── POST /api/payments/apple/notifications ────────────────────────────────────
 // Webhook for Apple App Store Server Notifications v2
-router.post("/apple/notifications", async (req, res) => {
+router.post("/apple/notifications", requireAppleIap, async (req, res) => {
   try {
     const result = await handleAppleServerNotification(req);
     return res.status(200).json({

@@ -3,8 +3,15 @@
  *
  * Paid packages are sold only through In-App Purchase:
  * - Google Play Billing (Android)
- * - Apple App Store (iOS)
+ * - Apple App Store (iOS), only when APPLE_IAP_ENABLED=true
  */
+
+/**
+ * Apple In-App Purchase stays off until StoreKit signed-transaction verification is in place.
+ */
+function isAppleIapEnabled() {
+  return String(process.env.APPLE_IAP_ENABLED || "").trim().toLowerCase() === "true";
+}
 
 /**
  * Validates payment configuration at application startup.
@@ -31,4 +38,5 @@ function validatePaymentConfig() {
 
 module.exports = {
   validatePaymentConfig,
+  isAppleIapEnabled,
 };

@@ -16,6 +16,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || "test_jwt_secret_min_32_chara
 process.env.GOOGLE_PLAY_PACKAGE_NAME = "com.trionova.matrimony";
 // Product sync is exercised against the mock client, regardless of the local .env setting
 process.env.GOOGLE_PLAY_SYNC_PRODUCTS = "true";
+process.env.APPLE_IAP_ENABLED = "false";
 process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = JSON.stringify({
   client_email: "test-service-account@matrimony.iam.gserviceaccount.com",
   private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3\n-----END PRIVATE KEY-----\n",
@@ -172,6 +173,8 @@ describe("Google Play IAP Tests", () => {
         status: "ACTIVE",
       },
     });
+    // Subscriptions must be declared explicitly; product IDs are never used to guess the type
+    process.env.GOOGLE_PLAY_PRODUCT_TYPES = JSON.stringify({ [testSubPackage.googlePlayProductId]: "SUBSCRIPTION" });
 
     testInAppPackage = await prisma.package.create({
       data: {
@@ -236,7 +239,20 @@ describe("Google Play IAP Tests", () => {
       assert.equal(body.success, true);
       assert.equal(body.data.provider, "IAP");
       assert.equal(body.data.isIap, true);
+      assert.equal(body.data.isAppleIap, false);
       assert.equal(body.data.serviceAccount, undefined);
+    });
+
+    it("Keeps Apple endpoints switched off unless APPLE_IAP_ENABLED=true", async () => {
+      for (const path of ["/api/payments/apple/verify", "/api/payments/apple/notifications"]) {
+        const res = await fetch(`${baseUrl}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${user1Token}` },
+          body: JSON.stringify({ productId: "credits_10", signedTransaction: "forged.jws.token", signedPayload: "forged" }),
+        });
+        assert.equal(res.status, 404);
+        assert.equal((await res.json()).code, "APPLE_IAP_DISABLED");
+      }
     });
 
     it("Rejects paid package order creation (IAP only)", async () => {
@@ -438,6 +454,43 @@ describe("Google Play IAP Tests", () => {
       // Verify credits incremented
       const userAfter = await prisma.user.findUnique({ where: { id: testUser1.id } });
       assert.equal(userAfter.credits, userBefore.credits + testInAppPackage.credits);
+    });
+
+    it("Treats a product whose name contains \"monthly\" as a one-time product", async () => {
+      const monthlyPackage = await prisma.package.create({
+        data: {
+          name: `Monthly Pack ${Date.now()}`,
+          credits: 12,
+          amount: 249,
+          validityDays: 30,
+          googlePlayProductId: `monthly_pack_${Date.now().toString().slice(-8)}`,
+          status: "ACTIVE",
+        },
+      });
+
+      try {
+        const res = await fetch(`${baseUrl}/api/payments/google-play/verify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${user1Token}`,
+          },
+          body: JSON.stringify({
+            productId: monthlyPackage.googlePlayProductId,
+            purchaseToken: `monthly_token_${Date.now()}`,
+          }),
+        });
+
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.status, "COMPLETED");
+        assert.equal(body.data.credits, 12);
+        assert.ok(mockGoogleCalls.some((c) => c.method === "products.get"));
+        assert.ok(!mockGoogleCalls.some((c) => c.method === "subscriptionsv2.get"));
+      } finally {
+        await prisma.transaction.deleteMany({ where: { packageId: monthlyPackage.id } });
+        await prisma.package.delete({ where: { id: monthlyPackage.id } });
+      }
     });
 
     it("Rejects pending one-time purchases with 400", async () => {
