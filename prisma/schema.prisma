@@ -200,10 +200,6 @@ model Transaction {
   packageId         String?
   amount            Float
   paymentMethod     String    @default("RAZORPAY")
-  cardInfo          String?
-  razorpayOrderId   String?
-  razorpayPaymentId String?
-  razorpaySignature String?
   paymentOrderId    String?
   paymentId         String?
   purchaseToken     String?
@@ -219,7 +215,6 @@ model Transaction {
 
   @@index([userId, status])
   @@index([status, createdAt])
-  @@index([razorpayPaymentId])
   @@index([paymentOrderId])
   @@index([purchaseToken])
 }
@@ -375,7 +370,5 @@ model AppConfig {
   id             String   @id @default("singleton")
   defaultCredits Int      @default(3)
   validityMonths Int      @default(3)
-  razorpayKeyId  String?
-  razorpaySecret String?
   updatedAt      DateTime @updatedAt
 }

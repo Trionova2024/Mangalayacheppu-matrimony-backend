@@ -2,7 +2,7 @@
  * Shared Subscription & Entitlement Service
  *
  * Centralizes credit allocation, transaction management, and subscription
- * lifecycle operations for all payment providers (Cashfree and Google Play IAP).
+ * lifecycle operations for In-App Purchase providers (Google Play and Apple).
  */
 
 const prisma = require("../lib/prisma");
@@ -35,7 +35,7 @@ function parseExpiryDate(expiryTime) {
  * @param {Object} params
  * @param {string} params.userId
  * @param {import("@prisma/client").Package} params.pkg
- * @param {string} params.paymentMethod - "GOOGLE_PLAY" | "CASHFREE" | "FREE_OFFER"
+ * @param {string} params.paymentMethod - "GOOGLE_PLAY" | "APPLE_IAP"
  * @param {string} [params.paymentOrderId]
  * @param {string} [params.paymentId]
  * @param {string} [params.purchaseToken]
@@ -78,7 +78,7 @@ async function grantPurchaseEntitlement({
           409
         );
       }
-      // If this is NOT an explicit RTDN renewal, any re-verification of the same token is a duplicate
+      // If this is NOT an explicit renewal notification, any re-verification of the same token is a duplicate
       if (!isRenewal) {
         return {
           transaction: existingWithToken,
@@ -194,7 +194,49 @@ async function grantPurchaseEntitlement({
 }
 
 /**
- * Handles subscription renewal event from Pub/Sub RTDN.
+ * Records a FAILED purchase attempt so admins can see failed / cancelled payments.
+ * Never grants credits. If this user already has a COMPLETED or FAILED transaction
+ * for the same purchase token, nothing new is recorded and that transaction is returned.
+ *
+ * @returns {Promise<{ transaction: any, recorded: boolean }>}
+ */
+async function recordFailedPurchase({
+  userId,
+  pkg,
+  paymentMethod,
+  purchaseToken,
+  paymentOrderId,
+  productId,
+  metadata,
+}) {
+  if (purchaseToken) {
+    const existing = await prisma.transaction.findFirst({
+      where: { userId, purchaseToken, status: { in: ["COMPLETED", "FAILED"] } },
+    });
+    if (existing) {
+      return { transaction: existing, recorded: false };
+    }
+  }
+
+  const transaction = await prisma.transaction.create({
+    data: {
+      userId,
+      packageId:      pkg?.id || null,
+      amount:         pkg?.amount || 0,
+      paymentMethod,
+      paymentOrderId: paymentOrderId || null,
+      purchaseToken:  purchaseToken || null,
+      productId:      productId || null,
+      metadata:       metadata || undefined,
+      status:         "FAILED",
+    },
+  });
+
+  return { transaction, recorded: true };
+}
+
+/**
+ * Handles a subscription renewal event from App Store Server Notifications.
  */
 async function handleSubscriptionRenewal({
   purchaseToken,
@@ -205,8 +247,9 @@ async function handleSubscriptionRenewal({
   metadata,
 }) {
   // Find the primary purchase or user linked to this purchaseToken
+  // (FAILED attempts are ignored: they may belong to a user who tried to reuse someone else's token)
   const initialTx = await prisma.transaction.findFirst({
-    where: { purchaseToken },
+    where: { purchaseToken, status: { not: "FAILED" } },
     orderBy: { createdAt: "asc" },
   });
 
@@ -248,7 +291,7 @@ async function handleSubscriptionRenewal({
 }
 
 /**
- * Handles subscription revocation or refund event from Pub/Sub RTDN.
+ * Handles a subscription revocation or refund event from App Store Server Notifications.
  */
 async function handleSubscriptionRevocationOrRefund({
   purchaseToken,
@@ -308,6 +351,7 @@ async function handleSubscriptionRevocationOrRefund({
 module.exports = {
   EntitlementError,
   grantPurchaseEntitlement,
+  recordFailedPurchase,
   handleSubscriptionRenewal,
   handleSubscriptionRevocationOrRefund,
 };

@@ -9,7 +9,8 @@
     "db:migrate": "npx prisma migrate deploy",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push",
-    "test": "node --test tests/cashfree_regression.test.js tests/google_play_iap.test.js tests/apple_iap.test.js"
+    "google:sync-products": "node src/scripts/syncGooglePlayProducts.js",
+    "test": "node --test tests/google_play_iap.test.js tests/apple_iap.test.js"
   },
   "dependencies": {
     "@apple/app-store-server-library": "^3.1.0",

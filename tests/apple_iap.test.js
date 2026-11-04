@@ -12,7 +12,6 @@ const express = require("express");
 
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test_jwt_secret_min_32_characters_long!";
-process.env.PAYMENT_PROVIDER = "IAP";
 process.env.APPLE_BUNDLE_ID = "com.trionova.matrimony";
 
 const prisma = require("../src/lib/prisma");

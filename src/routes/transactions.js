@@ -67,7 +67,7 @@ router.get("/", adminAuth, async (req, res) => {
         amount:        t.amount,
         payment:       t.paymentMethod || "RAZORPAY",
         paymentMethod: t.paymentMethod || "RAZORPAY",
-        card:          t.cardInfo || "",
+        card:          "",
         status:        titleCase(t.status),
         date:          t.createdAt.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }).toUpperCase(),
         createdAt:     t.createdAt,

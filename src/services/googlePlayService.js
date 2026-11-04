@@ -1,18 +1,18 @@
 /**
- * Google Play In-App Purchase (IAP) Verification and RTDN Service
+ * Google Play In-App Purchase (IAP) Verification Service
  *
  * Implements authoritative purchase verification and acknowledgement/consumption
  * using the official Google Android Publisher API (v3).
  */
 
 const fs = require("fs");
-const { androidpublisher } = require("@googleapis/androidpublisher");
-const { GoogleAuth } = require("google-auth-library");
+// Use the auth class bundled with @googleapis/androidpublisher: a GoogleAuth from a different
+// google-auth-library version is not recognised by the API client and requests go out unauthenticated.
+const { androidpublisher, auth: googleAuth } = require("@googleapis/androidpublisher");
 const { resolvePackageByGoogleProductId, determineProductType } = require("../config/productMapping");
 const {
   grantPurchaseEntitlement,
-  handleSubscriptionRenewal,
-  handleSubscriptionRevocationOrRefund,
+  recordFailedPurchase,
   EntitlementError,
 } = require("./subscriptionService");
 
@@ -49,7 +49,7 @@ function getAndroidPublisherClient() {
     authOptions.keyFile = googleAppCreds.trim();
   }
 
-  const auth = new GoogleAuth(authOptions);
+  const auth = new googleAuth.GoogleAuth(authOptions);
   return androidpublisher({ version: "v3", auth });
 }
 
@@ -420,143 +420,112 @@ async function verifyOneTimeProduct({
   };
 }
 
+// Verification errors that mean the purchase is definitively invalid.
+// Pending purchases, Google API outages and server configuration problems are
+// retryable, so they are NOT recorded as failed transactions.
+const FINAL_FAILURE_CODES = new Set([
+  "INVALID_PURCHASE_TOKEN",
+  "PURCHASE_CANCELED",
+  "INVALID_PURCHASE_STATE",
+  "PRODUCT_MISMATCH",
+  "PACKAGE_NAME_MISMATCH",
+  "UNKNOWN_PRODUCT_ID",
+  "SUBSCRIPTION_ON_HOLD",
+  "SUBSCRIPTION_EXPIRED",
+  "SUBSCRIPTION_INELIGIBLE",
+  "PURCHASE_TOKEN_USER_MISMATCH",
+  "ORDER_USER_MISMATCH",
+]);
+
 /**
- * Handles Real-time Developer Notifications (RTDN) delivered via Google Cloud Pub/Sub push.
- *
- * @param {Object} req - Express request
- * @returns {Promise<{ handled: boolean, eventType: string, message: string }>}
+ * Records a FAILED transaction when server-side verification rejects a purchase.
+ * Never throws: a recording problem must not change the response sent to the app.
  */
-async function handlePubSubNotification(req) {
-  // 1. Verify notification source (optional token or header check)
-  const expectedToken = process.env.GOOGLE_PLAY_PUBSUB_VERIFICATION_TOKEN;
-  if (expectedToken) {
-    const receivedToken =
-      req.query?.token ||
-      req.headers["x-pubsub-verification-token"] ||
-      req.headers["authorization"]?.replace(/^Bearer\s+/i, "");
+async function recordGooglePlayVerificationFailure({ userId, productId, purchaseToken, error }) {
+  if (!FINAL_FAILURE_CODES.has(error?.code)) return null;
 
-    if (receivedToken !== expectedToken) {
-      console.warn("[GooglePlay RTDN] PubSub token verification failed.");
-      throw new GooglePlayVerificationError("Unauthorized Pub/Sub source", "UNAUTHORIZED_PUBSUB", 401);
-    }
-  }
-
-  // Pub/Sub push envelope contains message.data as base64 string
-  const pubSubMsg = req.body?.message;
-  if (!pubSubMsg || !pubSubMsg.data) {
-    console.warn("[GooglePlay RTDN] Missing Pub/Sub message data.");
-    return { handled: false, eventType: "EMPTY", message: "Missing Pub/Sub message payload" };
-  }
-
-  let payload;
   try {
-    const decodedStr = Buffer.from(pubSubMsg.data, "base64").toString("utf8");
-    payload = JSON.parse(decodedStr);
-  } catch (err) {
-    console.error("[GooglePlay RTDN] Failed to parse Pub/Sub base64 payload:", err.message);
-    throw new GooglePlayVerificationError("Malformed Pub/Sub message data", "BAD_PAYLOAD", 400);
+    const cleanProductId = typeof productId === "string" && productId.trim() ? productId.trim() : null;
+    const cleanToken = typeof purchaseToken === "string" && purchaseToken.trim() ? purchaseToken.trim() : null;
+    const pkg = cleanProductId ? await resolvePackageByGoogleProductId(cleanProductId) : null;
+
+    return await recordFailedPurchase({
+      userId,
+      pkg,
+      paymentMethod: "GOOGLE_PLAY",
+      purchaseToken: cleanToken,
+      productId: cleanProductId,
+      metadata: {
+        source: "SERVER_VERIFICATION",
+        code: error.code,
+        message: error.message,
+      },
+    });
+  } catch (recordErr) {
+    console.error("[GooglePlay] Could not record failed purchase:", recordErr.message);
+    return null;
   }
+}
 
-  const configuredPackage = (process.env.GOOGLE_PLAY_PACKAGE_NAME || "").trim();
-  if (payload.packageName && configuredPackage && payload.packageName !== configuredPackage) {
-    console.warn(`[GooglePlay RTDN] Ignoring notification for different package: ${payload.packageName}`);
-    return { handled: false, eventType: "IGNORED_PACKAGE", message: "Package mismatch" };
-  }
+/**
+ * Records a purchase the app reports as cancelled or failed on the Google Play side
+ * (the user closed the payment sheet, the card was declined, billing unavailable, ...).
+ *
+ * @param {Object} params
+ * @param {string} params.userId - Authenticated user ID
+ * @param {string} params.productId - Google Play product ID the user tried to buy
+ * @param {string} [params.purchaseToken] - Present only if Google issued a token
+ * @param {string} [params.orderId] - Google order ID, if any
+ * @param {string} [params.reason] - "CANCELLED" | "FAILED" (default "FAILED")
+ * @param {string} [params.errorCode] - Billing error code from the app (e.g. "USER_CANCELED")
+ * @param {string} [params.errorMessage] - Billing error message from the app
+ * @returns {Promise<{ cancelled: boolean, recorded: boolean, alreadyCompleted: boolean }>}
+ */
+async function reportFailedGooglePlayPurchase({
+  userId,
+  productId,
+  purchaseToken,
+  orderId,
+  reason,
+  errorCode,
+  errorMessage,
+}) {
+  const cleanProductId = String(productId).trim();
+  const cleanToken = typeof purchaseToken === "string" && purchaseToken.trim() ? purchaseToken.trim() : null;
+  const cleanOrderId = typeof orderId === "string" && orderId.trim() ? orderId.trim() : null;
+  const cancelled = String(reason || "").trim().toUpperCase() === "CANCELLED";
 
-  // ── 1. Test Notification Ping ───────────────────────────────────────────────
-  if (payload.testNotification) {
-    console.log("[GooglePlay RTDN] Test notification received and acknowledged.");
-    return { handled: true, eventType: "TEST_NOTIFICATION", message: "Test notification acknowledged" };
-  }
+  const pkg = await resolvePackageByGoogleProductId(cleanProductId);
 
-  // ── 2. Subscription Notification ────────────────────────────────────────────
-  if (payload.subscriptionNotification) {
-    const subNotif = payload.subscriptionNotification;
-    const notificationType = subNotif.notificationType;
-    const purchaseToken = subNotif.purchaseToken;
-    const subscriptionId = subNotif.subscriptionId;
+  const { transaction, recorded } = await recordFailedPurchase({
+    userId,
+    pkg,
+    paymentMethod: "GOOGLE_PLAY",
+    purchaseToken: cleanToken,
+    paymentOrderId: cleanOrderId,
+    productId: cleanProductId,
+    metadata: {
+      source: "CLIENT",
+      reason: cancelled ? "CANCELLED" : "FAILED",
+      ...(errorCode != null && { errorCode: String(errorCode).slice(0, 100) }),
+      ...(errorMessage != null && { errorMessage: String(errorMessage).slice(0, 500) }),
+    },
+  });
 
-    console.log(`[GooglePlay RTDN] Subscription event (type: ${notificationType}) for subscription ${subscriptionId}`);
-
-    // Authoritative verification via Google Play API
-    const client = getAndroidPublisherClient();
-    let authorativeSub;
-    try {
-      const res = await client.purchases.subscriptionsv2.get({
-        packageName: configuredPackage || payload.packageName,
-        token: purchaseToken,
-      });
-      authorativeSub = res.data;
-    } catch (fetchErr) {
-      console.error(`[GooglePlay RTDN] Failed to query authoritative subscription state:`, fetchErr.message);
-      // Return 200/handled to prevent infinite Pub/Sub retries on permanently non-existent tokens
-      return { handled: false, eventType: `TYPE_${notificationType}`, message: fetchErr.message };
-    }
-
-    const internalPackage = await resolvePackageByGoogleProductId(subscriptionId);
-    const lineItem = authorativeSub.lineItems?.[0] || {};
-    const expiryTime = lineItem.expiryTime;
-    const orderId = authorativeSub.latestOrderId;
-
-    // Handle lifecycle types:
-    // 2: SUBSCRIPTION_RENEWED
-    // 4: SUBSCRIPTION_PURCHASED
-    // 3: SUBSCRIPTION_CANCELED (auto-renew turned off)
-    // 13: SUBSCRIPTION_EXPIRED
-    // 12: SUBSCRIPTION_REVOKED
-    switch (notificationType) {
-      case 2: // RENEWED
-      case 4: // PURCHASED
-        if (internalPackage) {
-          await handleSubscriptionRenewal({
-            purchaseToken,
-            orderId,
-            expiryTime,
-            productId: subscriptionId,
-            pkg: internalPackage,
-            metadata: { rtdnType: notificationType, subData: authorativeSub },
-          });
-        }
-        break;
-
-      case 12: // REVOKED
-        await handleSubscriptionRevocationOrRefund({
-          purchaseToken,
-          reason: "REVOKED",
-          metadata: { rtdnType: notificationType },
-        });
-        break;
-
-      case 13: // EXPIRED
-        console.log(`[GooglePlay RTDN] Subscription ${subscriptionId} expired.`);
-        break;
-
-      case 3: // CANCELED
-        console.log(`[GooglePlay RTDN] Subscription ${subscriptionId} canceled auto-renew. Access active until ${expiryTime}`);
-        break;
-
-      default:
-        console.log(`[GooglePlay RTDN] Event type ${notificationType} recorded.`);
-    }
-
-    return { handled: true, eventType: `TYPE_${notificationType}`, message: "Subscription event processed" };
-  }
-
-  // ── 3. One-Time Product Notification ─────────────────────────────────────────
-  if (payload.oneTimeProductNotification) {
-    const oneTimeNotif = payload.oneTimeProductNotification;
-    console.log(`[GooglePlay RTDN] One-time product notification received:`, oneTimeNotif.sku);
-    return { handled: true, eventType: "ONE_TIME_PRODUCT", message: "One-time product notification received" };
-  }
-
-  return { handled: true, eventType: "UNKNOWN", message: "Notification acknowledged" };
+  return {
+    cancelled,
+    recorded,
+    // The purchase was already verified successfully: the failure report is ignored
+    alreadyCompleted: transaction?.status === "COMPLETED",
+  };
 }
 
 module.exports = {
   getAndroidPublisherClient,
   setMockAndroidPublisherClient,
   verifyGooglePlayPurchase,
-  handlePubSubNotification,
+  recordGooglePlayVerificationFailure,
+  reportFailedGooglePlayPurchase,
   GooglePlayVerificationError,
   maskToken,
 };

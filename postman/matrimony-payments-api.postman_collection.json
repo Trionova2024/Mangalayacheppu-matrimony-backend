@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "matrimony-payments-iap-cashfree-v1",
-    "name": "Matrimony Payments API (IAP & Cashfree)",
-    "description": "Complete payment integration endpoints for Frontend Developers (Flutter iOS & Android):\n\n1. Payment Gateway Configuration\n2. Packages & Plan List\n3. Apple In-App Purchase (StoreKit 2 / Receipt Verification)\n4. Google Play In-App Purchase (Android Publisher API)\n5. Cashfree PG Flow\n6. Webhooks (Apple Server Notifications, Google Pub/Sub RTDN, Cashfree)",
+    "name": "Matrimony Payments API (In-App Purchase)",
+    "description": "Complete payment integration endpoints for Frontend Developers (Flutter iOS & Android):\n\n1. Payment Gateway Configuration\n2. Packages & Plan List\n3. Apple In-App Purchase (StoreKit 2 / Receipt Verification)\n4. Google Play In-App Purchase (Android Publisher API) + failed / cancelled purchase reporting\n5. Webhook (Apple App Store Server Notifications)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -22,14 +22,14 @@
             "config"
           ]
         },
-        "description": "Public endpoint. Call before checkout to determine whether the app should trigger IAP (Google Play / Apple) or Cashfree."
+        "description": "Public endpoint. Returns the In-App Purchase platform flags (Google Play / Apple) the app should use for checkout."
       },
       "response": [
         {
           "name": "Example Response - IAP Mode",
           "status": "OK",
           "code": 200,
-          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"provider\": \"IAP\",\n    \"isCashfree\": false,\n    \"isIap\": true,\n    \"isGooglePlay\": true,\n    \"isAppleIap\": true\n  }\n}"
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"provider\": \"IAP\",\n    \"isIap\": true,\n    \"isGooglePlay\": true,\n    \"isAppleIap\": true\n  }\n}"
         }
       ]
     },
@@ -162,7 +162,7 @@
       ]
     },
     {
-      "name": "05. Cashfree - Create Order (Non-IAP Mode)",
+      "name": "05. Android - Report Failed / Cancelled Google Play Purchase",
       "request": {
         "method": "POST",
         "header": [
@@ -179,7 +179,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"packageId\": \"pkg-bronze\"\n}",
+          "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -187,127 +187,7 @@
           }
         },
         "url": {
-          "raw": "{{baseUrl}}/api/packages/create-order",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "packages",
-            "create-order"
-          ]
-        },
-        "description": "Used when PAYMENT_PROVIDER=CASHFREE. Creates a Cashfree order session. (Free offers with amount=0 activate immediately without gateway)."
-      },
-      "response": [
-        {
-          "name": "Success (200 OK)",
-          "status": "OK",
-          "code": 200,
-          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"orderId\": \"order_user123_1729580000000\",\n    \"paymentSessionId\": \"session_abcdef123456\",\n    \"environment\": \"sandbox\",\n    \"amount\": 29900,\n    \"currency\": \"INR\"\n  }\n}"
-        }
-      ]
-    },
-    {
-      "name": "06. Cashfree - Verify Payment",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Authorization",
-            "value": "Bearer {{userToken}}",
-            "type": "text"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"orderId\": \"order_user123_1729580000000\",\n  \"packageId\": \"pkg-bronze\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/packages/verify-payment",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "packages",
-            "verify-payment"
-          ]
-        },
-        "description": "Verifies Cashfree payment status after Cashfree mobile SDK returns success."
-      }
-    },
-    {
-      "name": "07. Cashfree - Cancel / Failed Payment",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Authorization",
-            "value": "Bearer {{userToken}}",
-            "type": "text"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"orderId\": \"order_user123_1729580000000\",\n  \"packageId\": \"pkg-bronze\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/packages/cancel",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "packages",
-            "cancel"
-          ]
-        },
-        "description": "Records user-initiated cancellation so the transaction log reflects FAILED."
-      }
-    },
-    {
-      "name": "08. Webhook - Google Play Pub/Sub RTDN",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"message\": {\n    \"data\": \"eyJ2ZXJzaW9uIjoiMS4wIiwicGFja2FnZU5hbWUiOiJjb20udHJpb25vdmEubWF0cmltb255IiwidGVzdE5vdGlmaWNhdGlvbiI6eyJ2ZXJzaW9uIjoiMS4wIn19\",\n    \"messageId\": \"msg_12345\",\n    \"publishTime\": \"2026-10-22T10:00:00Z\"\n  }\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/payments/google-play/notifications?token={{pubsubVerificationToken}}",
+          "raw": "{{baseUrl}}/api/payments/google-play/failed",
           "host": [
             "{{baseUrl}}"
           ],
@@ -315,20 +195,83 @@
             "api",
             "payments",
             "google-play",
-            "notifications"
-          ],
-          "query": [
-            {
-              "key": "token",
-              "value": "{{pubsubVerificationToken}}"
-            }
+            "failed"
           ]
         },
-        "description": "Configured in Google Cloud Pub/Sub Push Subscription. Handles subscription renewals, cancellations, and revocations."
-      }
+        "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned."
+      },
+      "response": [
+        {
+          "name": "200 - Cancelled by user",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/google-play/failed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "google-play",
+                "failed"
+              ]
+            },
+            "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned."
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": false,\n  \"status\": \"FAILED\",\n  \"message\": \"Payment cancelled by user\",\n  \"data\": {\n    \"status\": \"FAILED\",\n    \"message\": \"Payment cancelled by user\"\n  }\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Failure is recorded (or purchase already completed)', function () {",
+              "    const jsonData = pm.response.json();",
+              "    pm.expect(['FAILED', 'COMPLETED']).to.include(jsonData.status);",
+              "});"
+            ]
+          }
+        }
+      ]
     },
     {
-      "name": "09. Webhook - Apple App Store Server Notifications v2",
+      "name": "06. Webhook - Apple App Store Server Notifications v2",
       "request": {
         "method": "POST",
         "header": [
@@ -360,50 +303,6 @@
           ]
         },
         "description": "Configured in App Store Connect under Server Notifications v2."
-      }
-    },
-    {
-      "name": "10. Webhook - Cashfree PG Webhook",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          },
-          {
-            "key": "x-webhook-timestamp",
-            "value": "1729580000000",
-            "type": "text"
-          },
-          {
-            "key": "x-webhook-signature",
-            "value": "<HMAC_SHA256_BASE64_SIGNATURE>",
-            "type": "text"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"type\": \"PAYMENT_SUCCESS_WEBHOOK\",\n  \"data\": {\n    \"order\": {\n      \"order_id\": \"order_user123_1729580000000\",\n      \"order_amount\": 299,\n      \"order_tags\": {\n        \"userId\": \"{{userId}}\",\n        \"packageId\": \"pkg-bronze\"\n      }\n    },\n    \"payment\": {\n      \"cf_payment_id\": \"12345678\",\n      \"payment_status\": \"SUCCESS\"\n    }\n  }\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/packages/cashfree-webhook",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "packages",
-            "cashfree-webhook"
-          ]
-        },
-        "description": "Configured in Cashfree Merchant Dashboard under Developers > Webhooks."
       }
     }
   ]

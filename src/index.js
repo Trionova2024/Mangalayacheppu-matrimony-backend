@@ -54,11 +54,7 @@ const corsOptions = {
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 app.use(cors(corsOptions));
-app.use(express.json({
-  verify: (req, _res, buf) => {
-    req.rawBody = buf ? buf.toString("utf8") : "";
-  },
-}));
+app.use(express.json());
 
 // Request logging: method, path, status, duration
 app.use((req, res, next) => {
@@ -69,12 +65,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Global rate limiting across /api endpoints (bypass for payment gateway webhooks & notifications)
+// Global rate limiting across /api endpoints (bypass for store server notifications)
 app.use("/api", (req, res, next) => {
   if (
-    req.path === "/packages/webhook" ||
-    req.path === "/packages/cashfree-webhook" ||
-    req.path === "/payments/google-play/notifications" ||
     req.path === "/payments/apple/notifications"
   ) {
     return next();

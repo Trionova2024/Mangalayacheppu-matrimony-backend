@@ -1,9 +1,9 @@
 const router   = require("express").Router();
 const userAuth = require("../middleware/userAuth");
-const { getPaymentProvider, isCashfreeEnabled, isIapEnabled } = require("../config/paymentConfig");
 const {
   verifyGooglePlayPurchase,
-  handlePubSubNotification,
+  recordGooglePlayVerificationFailure,
+  reportFailedGooglePlayPurchase,
   GooglePlayVerificationError,
 } = require("../services/googlePlayService");
 const {
@@ -19,11 +19,10 @@ router.get("/config", (req, res) => {
   res.json({
     success: true,
     data: {
-      provider:     getPaymentProvider(),
-      isCashfree:   isCashfreeEnabled(),
-      isIap:        isIapEnabled(),
-      isGooglePlay: isIapEnabled(),
-      isAppleIap:   true, // Apple IAP is always available for iOS clients to satisfy App Store rules
+      provider:     "IAP",
+      isIap:        true,
+      isGooglePlay: true,
+      isAppleIap:   true,
     },
   });
 });
@@ -63,6 +62,14 @@ router.post("/google-play/verify", userAuth, async (req, res) => {
     return res.status(200).json(result);
   } catch (err) {
     if (err instanceof GooglePlayVerificationError || err instanceof EntitlementError) {
+      const { productId, purchaseToken } = req.body || {};
+      await recordGooglePlayVerificationFailure({
+        userId: req.user.id,
+        productId,
+        purchaseToken,
+        error:  err,
+      });
+
       return res.status(err.statusCode || 400).json({
         success: false,
         status:  "FAILED",
@@ -82,28 +89,54 @@ router.post("/google-play/verify", userAuth, async (req, res) => {
   }
 });
 
-// ── POST /api/payments/google-play/notifications ──────────────────────────────
-// Webhook for Google Cloud Pub/Sub Real-time Developer Notifications (RTDN)
-router.post("/google-play/notifications", async (req, res) => {
+// ── POST /api/payments/google-play/failed ─────────────────────────────────────
+// App reports a cancelled / failed Google Play purchase (records a FAILED transaction, no credits)
+router.post("/google-play/failed", userAuth, async (req, res) => {
   try {
-    const result = await handlePubSubNotification(req);
-    return res.status(200).json({
-      success: true,
-      data:    result,
-    });
-  } catch (err) {
-    if (err instanceof GooglePlayVerificationError) {
-      return res.status(err.statusCode || 400).json({
+    const { productId, purchaseToken, orderId, reason, errorCode, errorMessage } = req.body || {};
+
+    if (!productId || typeof productId !== "string" || !productId.trim()) {
+      return res.status(400).json({
         success: false,
-        code:    err.code,
-        message: err.message,
+        status:  "FAILED",
+        message: "productId is required",
+        data:    { status: "FAILED", message: "productId is required" },
       });
     }
 
-    console.error("[GooglePlay PubSub Controller Error]:", err);
+    const result = await reportFailedGooglePlayPurchase({
+      userId: req.user.id,
+      productId,
+      purchaseToken,
+      orderId,
+      reason,
+      errorCode,
+      errorMessage,
+    });
+
+    if (result.alreadyCompleted) {
+      return res.json({
+        success: true,
+        status:  "COMPLETED",
+        message: "Payment already processed",
+        data:    { status: "COMPLETED", alreadyProcessed: true },
+      });
+    }
+
+    const message = result.cancelled ? "Payment cancelled by user" : "Payment failed";
+    return res.json({
+      success: false,
+      status:  "FAILED",
+      message,
+      data:    { status: "FAILED", message },
+    });
+  } catch (err) {
+    console.error("[GooglePlay Failed-Purchase Controller Error]:", err);
     return res.status(500).json({
       success: false,
-      message: "Error processing Pub/Sub notification",
+      status:  "FAILED",
+      message: "Internal server error while recording failed purchase",
+      data:    { status: "FAILED", message: "Internal server error" },
     });
   }
 });

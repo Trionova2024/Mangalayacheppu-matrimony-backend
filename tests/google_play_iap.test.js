@@ -3,7 +3,7 @@
  *
  * Verifies provider selection, configuration validation, purchase verification
  * (subscription and consumable one-time products), idempotency, cross-user protection,
- * Google API error handling, and Pub/Sub RTDN lifecycle handling.
+ * Google API error handling, failed purchase recording, and Google Play product sync.
  */
 
 const { describe, it, before, after, beforeEach } = require("node:test");
@@ -13,16 +13,16 @@ const express = require("express");
 
 process.env.NODE_ENV = "test";
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test_jwt_secret_min_32_characters_long!";
-process.env.PAYMENT_PROVIDER = "IAP";
 process.env.GOOGLE_PLAY_PACKAGE_NAME = "com.trionova.matrimony";
+// Product sync is exercised against the mock client, regardless of the local .env setting
+process.env.GOOGLE_PLAY_SYNC_PRODUCTS = "true";
 process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = JSON.stringify({
   client_email: "test-service-account@matrimony.iam.gserviceaccount.com",
   private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3\n-----END PRIVATE KEY-----\n",
 });
-process.env.GOOGLE_PLAY_PUBSUB_VERIFICATION_TOKEN = "test_pubsub_secret_token";
 
 const prisma = require("../src/lib/prisma");
-const { validatePaymentConfig, getPaymentProvider } = require("../src/config/paymentConfig");
+const { validatePaymentConfig } = require("../src/config/paymentConfig");
 const { setMockAndroidPublisherClient } = require("../src/services/googlePlayService");
 
 function createTestApp() {
@@ -101,6 +101,26 @@ describe("Google Play IAP Tests", () => {
               throw overrides.productsConsumeError;
             }
             return { data: {} };
+          },
+        },
+      },
+      monetization: {
+        onetimeproducts: {
+          patch: async (params) => {
+            mockGoogleCalls.push({ method: "onetimeproducts.patch", params });
+            if (overrides.productPatchError) {
+              throw overrides.productPatchError;
+            }
+            return { data: params.requestBody };
+          },
+          purchaseOptions: {
+            batchUpdateStates: async (params) => {
+              mockGoogleCalls.push({ method: "purchaseOptions.batchUpdateStates", params });
+              if (overrides.batchUpdateStatesError) {
+                throw overrides.batchUpdateStatesError;
+              }
+              return { data: {} };
+            },
           },
         },
       },
@@ -197,42 +217,13 @@ describe("Google Play IAP Tests", () => {
   });
 
   describe("1. Environment & Provider Configuration", () => {
-    it("Validates PAYMENT_PROVIDER=CASHFREE without requiring IAP credentials", () => {
-      const origProvider = process.env.PAYMENT_PROVIDER;
-      const origPkg = process.env.GOOGLE_PLAY_PACKAGE_NAME;
-      const origCreds = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
-
-      process.env.PAYMENT_PROVIDER = "CASHFREE";
-      delete process.env.GOOGLE_PLAY_PACKAGE_NAME;
-      delete process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
-
-      const result = validatePaymentConfig();
-      assert.equal(result.provider, "CASHFREE");
-
-      process.env.PAYMENT_PROVIDER = origProvider;
-      process.env.GOOGLE_PLAY_PACKAGE_NAME = origPkg;
-      process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = origCreds;
-    });
-
-    it("Rejects invalid PAYMENT_PROVIDER with a clear error", () => {
-      const origProvider = process.env.PAYMENT_PROVIDER;
-      process.env.PAYMENT_PROVIDER = "STRIPE";
-
-      assert.throws(
-        () => validatePaymentConfig(),
-        /Invalid PAYMENT_PROVIDER "STRIPE"/
-      );
-
-      process.env.PAYMENT_PROVIDER = origProvider;
-    });
-
-    it("Requires GOOGLE_PLAY_PACKAGE_NAME when PAYMENT_PROVIDER=IAP", () => {
+    it("Requires GOOGLE_PLAY_PACKAGE_NAME", () => {
       const origPkg = process.env.GOOGLE_PLAY_PACKAGE_NAME;
       delete process.env.GOOGLE_PLAY_PACKAGE_NAME;
 
       assert.throws(
         () => validatePaymentConfig(),
-        /GOOGLE_PLAY_PACKAGE_NAME is required when PAYMENT_PROVIDER=IAP/
+        /GOOGLE_PLAY_PACKAGE_NAME is required/
       );
 
       process.env.GOOGLE_PLAY_PACKAGE_NAME = origPkg;
@@ -245,11 +236,10 @@ describe("Google Play IAP Tests", () => {
       assert.equal(body.success, true);
       assert.equal(body.data.provider, "IAP");
       assert.equal(body.data.isIap, true);
-      assert.equal(body.data.isCashfree, false);
       assert.equal(body.data.serviceAccount, undefined);
     });
 
-    it("Rejects Cashfree order creation when PAYMENT_PROVIDER=IAP", async () => {
+    it("Rejects paid package order creation (IAP only)", async () => {
       const res = await fetch(`${baseUrl}/api/packages/create-order`, {
         method: "POST",
         headers: {
@@ -584,142 +574,306 @@ describe("Google Play IAP Tests", () => {
     });
   });
 
-  describe("3. Google Play RTDN Pub/Sub Notifications", () => {
-    it("Rejects Pub/Sub push notification with invalid token", async () => {
-      const res = await fetch(`${baseUrl}/api/payments/google-play/notifications?token=invalid_token`, {
+  describe("4. Failed & Cancelled Purchases", () => {
+    async function postJson(path, token, body) {
+      return fetch(`${baseUrl}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: { data: Buffer.from("{}").toString("base64") } }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("Requires authenticated user to report a failed purchase", async () => {
+      const res = await postJson("/api/payments/google-play/failed", null, {
+        productId: testInAppPackage.googlePlayProductId,
       });
       assert.equal(res.status, 401);
     });
 
-    it("Acknowledges test notification ping from Google Play Console", async () => {
-      const payload = {
-        version: "1.0",
-        packageName: "com.trionova.matrimony",
-        eventTimeMillis: Date.now().toString(),
-        testNotification: { version: "1.0" },
-      };
+    it("Rejects failed-purchase report without productId", async () => {
+      const res = await postJson("/api/payments/google-play/failed", user1Token, { reason: "CANCELLED" });
+      assert.equal(res.status, 400);
+    });
 
-      const res = await fetch(`${baseUrl}/api/payments/google-play/notifications?token=test_pubsub_secret_token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: {
-            data: Buffer.from(JSON.stringify(payload)).toString("base64"),
-          },
-        }),
+    it("Records a user-cancelled purchase as FAILED without changing credits", async () => {
+      const before = await prisma.user.findUnique({ where: { id: testUser1.id } });
+      const startedAt = new Date();
+
+      const res = await postJson("/api/payments/google-play/failed", user1Token, {
+        productId: testInAppPackage.googlePlayProductId,
+        reason: "CANCELLED",
+        errorCode: "USER_CANCELED",
       });
 
       assert.equal(res.status, 200);
       const body = await res.json();
-      assert.equal(body.success, true);
-      assert.equal(body.data.eventType, "TEST_NOTIFICATION");
+      assert.equal(body.success, false);
+      assert.equal(body.status, "FAILED");
+      assert.equal(body.message, "Payment cancelled by user");
+
+      const tx = await prisma.transaction.findFirst({
+        where: { userId: testUser1.id, status: "FAILED", purchaseToken: null, createdAt: { gte: startedAt } },
+        orderBy: { createdAt: "desc" },
+      });
+      assert.ok(tx);
+      assert.equal(tx.paymentMethod, "GOOGLE_PLAY");
+      assert.equal(tx.packageId, testInAppPackage.id);
+      assert.equal(tx.amount, testInAppPackage.amount);
+      assert.equal(tx.metadata.source, "CLIENT");
+      assert.equal(tx.metadata.reason, "CANCELLED");
+      assert.equal(tx.metadata.errorCode, "USER_CANCELED");
+
+      const after = await prisma.user.findUnique({ where: { id: testUser1.id } });
+      assert.equal(after.credits, before.credits);
     });
 
-    it("Processes subscription renewal notification (type 2) and updates expiry and credits", async () => {
-      const purchaseToken = `rtdn_renew_token_${Date.now()}`;
+    it("Does not duplicate FAILED records for the same purchase token", async () => {
+      const purchaseToken = `failed_dup_token_${Date.now()}`;
+      const payload = { productId: testInAppPackage.googlePlayProductId, purchaseToken, errorCode: "ERROR" };
 
-      // Seed initial purchase for User 1
-      await prisma.transaction.create({
-        data: {
-          userId: testUser1.id,
-          packageId: testSubPackage.id,
-          amount: testSubPackage.amount,
-          paymentMethod: "GOOGLE_PLAY",
-          paymentOrderId: `GPA.init-${Date.now()}`,
-          purchaseToken,
-          productId: testSubPackage.googlePlayProductId,
-          status: "COMPLETED",
-        },
-      });
+      const res1 = await postJson("/api/payments/google-play/failed", user1Token, payload);
+      const res2 = await postJson("/api/payments/google-play/failed", user1Token, payload);
+      assert.equal((await res1.json()).message, "Payment failed");
+      assert.equal(res2.status, 200);
 
-      const renewalOrderId = `GPA.renew-${Date.now()}`;
-      setupMockGoogleClient({
-        latestOrderId: renewalOrderId,
-        lineItemProductId: testSubPackage.googlePlayProductId,
-        expiryTime: new Date(Date.now() + 60 * 86400000).toISOString(),
-      });
-
-      const userBefore = await prisma.user.findUnique({ where: { id: testUser1.id } });
-
-      const payload = {
-        version: "1.0",
-        packageName: "com.trionova.matrimony",
-        subscriptionNotification: {
-          notificationType: 2, // SUBSCRIPTION_RENEWED
-          purchaseToken,
-          subscriptionId: testSubPackage.googlePlayProductId,
-        },
-      };
-
-      const res = await fetch(`${baseUrl}/api/payments/google-play/notifications?token=test_pubsub_secret_token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: {
-            data: Buffer.from(JSON.stringify(payload)).toString("base64"),
-          },
-        }),
-      });
-
-      assert.equal(res.status, 200);
-
-      // Verify renewal transaction created
-      const renewalTx = await prisma.transaction.findFirst({
-        where: { paymentOrderId: renewalOrderId },
-      });
-      assert.ok(renewalTx);
-      assert.equal(renewalTx.userId, testUser1.id);
-
-      // Verify renewal credits added
-      const userAfter = await prisma.user.findUnique({ where: { id: testUser1.id } });
-      assert.equal(userAfter.credits, userBefore.credits + testSubPackage.credits);
+      const count = await prisma.transaction.count({ where: { purchaseToken, status: "FAILED" } });
+      assert.equal(count, 1);
     });
 
-    it("Processes subscription revocation notification (type 12) and marks transaction REFUNDED", async () => {
-      const purchaseToken = `rtdn_revoke_token_${Date.now()}`;
-
-      await prisma.transaction.create({
-        data: {
-          userId: testUser1.id,
-          packageId: testSubPackage.id,
-          amount: testSubPackage.amount,
-          paymentMethod: "GOOGLE_PLAY",
-          paymentOrderId: `GPA.revoke_test-${Date.now()}`,
-          purchaseToken,
-          productId: testSubPackage.googlePlayProductId,
-          status: "COMPLETED",
-        },
+    it("Ignores a failure report for a purchase that was already verified", async () => {
+      const purchaseToken = `failed_after_success_${Date.now()}`;
+      const verifyRes = await postJson("/api/payments/google-play/verify", user1Token, {
+        productId: testInAppPackage.googlePlayProductId,
+        purchaseToken,
       });
+      assert.equal(verifyRes.status, 200);
 
-      const payload = {
-        version: "1.0",
-        packageName: "com.trionova.matrimony",
-        subscriptionNotification: {
-          notificationType: 12, // SUBSCRIPTION_REVOKED
-          purchaseToken,
-          subscriptionId: testSubPackage.googlePlayProductId,
-        },
-      };
-
-      const res = await fetch(`${baseUrl}/api/payments/google-play/notifications?token=test_pubsub_secret_token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: {
-            data: Buffer.from(JSON.stringify(payload)).toString("base64"),
-          },
-        }),
+      const res = await postJson("/api/payments/google-play/failed", user1Token, {
+        productId: testInAppPackage.googlePlayProductId,
+        purchaseToken,
       });
-
       assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.status, "COMPLETED");
+      assert.equal(body.data.alreadyProcessed, true);
 
-      const revokedTx = await prisma.transaction.findFirst({
-        where: { purchaseToken },
+      const failedCount = await prisma.transaction.count({ where: { purchaseToken, status: "FAILED" } });
+      assert.equal(failedCount, 0);
+    });
+
+    it("Records FAILED transaction when Google reports the purchase as canceled", async () => {
+      setupMockGoogleClient({ purchaseState: 1 }); // 1 = Canceled
+      const purchaseToken = `canceled_state_token_${Date.now()}`;
+
+      const res = await postJson("/api/payments/google-play/verify", user1Token, {
+        productId: testInAppPackage.googlePlayProductId,
+        purchaseToken,
       });
-      assert.equal(revokedTx.status, "REFUNDED");
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, "PURCHASE_CANCELED");
+
+      const tx = await prisma.transaction.findFirst({ where: { purchaseToken } });
+      assert.ok(tx);
+      assert.equal(tx.status, "FAILED");
+      assert.equal(tx.userId, testUser1.id);
+      assert.equal(tx.packageId, testInAppPackage.id);
+      assert.equal(tx.metadata.source, "SERVER_VERIFICATION");
+      assert.equal(tx.metadata.code, "PURCHASE_CANCELED");
+    });
+
+    it("Records FAILED transaction for a user who tries to reuse another user's token", async () => {
+      const purchaseToken = `reuse_attempt_token_${Date.now()}`;
+      const payload = { productId: testInAppPackage.googlePlayProductId, purchaseToken };
+
+      assert.equal((await postJson("/api/payments/google-play/verify", user1Token, payload)).status, 200);
+      assert.equal((await postJson("/api/payments/google-play/verify", user2Token, payload)).status, 409);
+
+      const failed = await prisma.transaction.findFirst({ where: { purchaseToken, status: "FAILED" } });
+      assert.ok(failed);
+      assert.equal(failed.userId, testUser2.id);
+      assert.equal(failed.metadata.code, "PURCHASE_TOKEN_USER_MISMATCH");
+    });
+
+    it("Does not record pending purchases as FAILED (they can still complete)", async () => {
+      setupMockGoogleClient({ purchaseState: 2 }); // 2 = Pending
+      const purchaseToken = `pending_not_failed_${Date.now()}`;
+
+      const res = await postJson("/api/payments/google-play/verify", user1Token, {
+        productId: testInAppPackage.googlePlayProductId,
+        purchaseToken,
+      });
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).code, "PURCHASE_PENDING");
+
+      const tx = await prisma.transaction.findFirst({ where: { purchaseToken } });
+      assert.equal(tx, null);
+    });
+  });
+
+  describe("5. Admin: Automatic Google Play Products for Packages", () => {
+    let admin;
+    let adminToken;
+    const createdPackageIds = [];
+    const suffix = Date.now().toString().slice(-6);
+
+    async function adminRequest(method, path, body) {
+      return fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    }
+
+    async function createPackage(body) {
+      const res = await adminRequest("POST", "/api/packages", body);
+      const json = await res.json();
+      if (json.data?.id) createdPackageIds.push(json.data.id);
+      return { res, json };
+    }
+
+    const callsOf = (method) => mockGoogleCalls.filter((c) => c.method === method);
+    const stateRequest = (call) => call.params.requestBody.requests[0];
+
+    before(async () => {
+      admin = await prisma.admin.create({
+        data: { name: "IAP Test Admin", email: `iap_admin_${suffix}@test.local`, password: "not-used" },
+      });
+      adminToken = jwt.sign({ id: admin.id }, process.env.JWT_SECRET);
+    });
+
+    after(async () => {
+      if (createdPackageIds.length) await prisma.package.deleteMany({ where: { id: { in: createdPackageIds } } });
+      if (admin) await prisma.admin.delete({ where: { id: admin.id } });
+    });
+
+    it("Creates the Google Play product automatically and stores the generated product ID", async () => {
+      const { res, json } = await createPackage({
+        name: `Gold Credits ${suffix}`, credits: 30, amount: 499, validityDays: 90,
+      });
+      assert.equal(res.status, 201);
+
+      const productId = json.data.googlePlayProductId;
+      assert.equal(productId, `gold_credits_${suffix}_${json.data.id.replace(/-/g, "").slice(0, 8)}`);
+
+      const [patch] = callsOf("onetimeproducts.patch");
+      assert.equal(patch.params.productId, productId);
+      assert.equal(patch.params.allowMissing, true);
+      assert.equal(patch.params.packageName, "com.trionova.matrimony");
+      const body = patch.params.requestBody;
+      assert.equal(body.listings[0].title, `Gold Credits ${suffix}`);
+      const pricing = body.purchaseOptions[0].regionalPricingAndAvailabilityConfigs[0];
+      assert.deepEqual(pricing, {
+        regionCode: "IN",
+        price: { currencyCode: "INR", units: "499", nanos: 0 },
+        availability: "AVAILABLE",
+      });
+      assert.equal(body.purchaseOptions[0].buyOption.legacyCompatible, true);
+
+      const [state] = callsOf("purchaseOptions.batchUpdateStates");
+      assert.ok(stateRequest(state).activatePurchaseOptionRequest);
+    });
+
+    it("Uses an admin-provided product ID when given", async () => {
+      const { res, json } = await createPackage({
+        name: `Custom ID Pack ${suffix}`, credits: 15, amount: 349, googlePlayProductId: `credits_15_${suffix}`,
+      });
+      assert.equal(res.status, 201);
+      assert.equal(json.data.googlePlayProductId, `credits_15_${suffix}`);
+      assert.equal(callsOf("onetimeproducts.patch")[0].params.productId, `credits_15_${suffix}`);
+    });
+
+    it("Does not create a Google Play product for free packages", async () => {
+      const { res, json } = await createPackage({ name: `Free Pack ${suffix}`, credits: 3, amount: 0 });
+      assert.equal(res.status, 201);
+      assert.equal(json.data.googlePlayProductId, null);
+      assert.equal(mockGoogleCalls.length, 0);
+    });
+
+    it("Rejects an invalid product ID format without calling Google", async () => {
+      const { res, json } = await createPackage({
+        name: `Bad ID Pack ${suffix}`, credits: 5, amount: 99, googlePlayProductId: "Credits-15 Pack",
+      });
+      assert.equal(res.status, 400);
+      assert.match(json.message, /googlePlayProductId/);
+      assert.equal(mockGoogleCalls.length, 0);
+    });
+
+    it("Rejects a product ID already used by another package without calling Google", async () => {
+      const { res } = await createPackage({
+        name: `Duplicate ID Pack ${suffix}`, credits: 5, amount: 99, googlePlayProductId: `credits_15_${suffix}`,
+      });
+      assert.equal(res.status, 409);
+      assert.equal(mockGoogleCalls.length, 0);
+    });
+
+    it("Does not save the package when Google Play product creation fails", async () => {
+      const apiError = new Error("The caller does not have permission");
+      apiError.code = 403;
+      setupMockGoogleClient({ productPatchError: apiError });
+
+      const name = `Google Fails Pack ${suffix}`;
+      const { res, json } = await createPackage({ name, credits: 10, amount: 299 });
+      assert.equal(res.status, 502);
+      assert.match(json.message, /Google Play product sync failed: The caller does not have permission/);
+
+      const saved = await prisma.package.findFirst({ where: { name } });
+      assert.equal(saved, null);
+    });
+
+    it("Pushes price changes and deactivation to Google Play on update", async () => {
+      const { json: created } = await createPackage({ name: `Update Pack ${suffix}`, credits: 20, amount: 449 });
+      const productId = created.data.googlePlayProductId;
+      setupMockGoogleClient();
+
+      const priceRes = await adminRequest("PUT", `/api/packages/${created.data.id}`, { amount: 599 });
+      assert.equal(priceRes.status, 200);
+      assert.equal((await priceRes.json()).data.googlePlayProductId, productId);
+      const [patch] = callsOf("onetimeproducts.patch");
+      assert.equal(patch.params.productId, productId);
+      assert.equal(patch.params.requestBody.purchaseOptions[0].regionalPricingAndAvailabilityConfigs[0].price.units, "599");
+
+      setupMockGoogleClient();
+      const statusRes = await adminRequest("PUT", `/api/packages/${created.data.id}`, { status: "INACTIVE" });
+      assert.equal(statusRes.status, 200);
+      const [state] = callsOf("purchaseOptions.batchUpdateStates");
+      assert.ok(stateRequest(state).deactivatePurchaseOptionRequest);
+    });
+
+    it("Keeps the package unchanged when the Google Play update fails", async () => {
+      const { json: created } = await createPackage({ name: `Update Fails Pack ${suffix}`, credits: 20, amount: 449 });
+      setupMockGoogleClient({ productPatchError: new Error("Price is below the minimum") });
+
+      const res = await adminRequest("PUT", `/api/packages/${created.data.id}`, { amount: 1 });
+      assert.equal(res.status, 502);
+
+      const unchanged = await prisma.package.findUnique({ where: { id: created.data.id } });
+      assert.equal(unchanged.amount, 449);
+    });
+
+    it("Creates the missing Google Play product when an existing package without one is updated", async () => {
+      const legacy = await prisma.package.create({
+        data: { name: `Legacy Pack ${suffix}`, credits: 10, amount: 399, validityDays: 90 },
+      });
+      createdPackageIds.push(legacy.id);
+
+      const res = await adminRequest("PUT", `/api/packages/${legacy.id}`, { credits: 12 });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.data.googlePlayProductId, `legacy_pack_${suffix}_${legacy.id.replace(/-/g, "").slice(0, 8)}`);
+      assert.equal(callsOf("onetimeproducts.patch").length, 1);
+    });
+
+    it("Deactivates the Google Play product when the package is deleted", async () => {
+      const { json: created } = await createPackage({ name: `Delete Pack ${suffix}`, credits: 5, amount: 199 });
+      setupMockGoogleClient();
+
+      const res = await adminRequest("DELETE", `/api/packages/${created.data.id}`);
+      assert.equal(res.status, 200);
+      const [state] = callsOf("purchaseOptions.batchUpdateStates");
+      assert.equal(stateRequest(state).deactivatePurchaseOptionRequest.productId, created.data.googlePlayProductId);
     });
   });
 });
