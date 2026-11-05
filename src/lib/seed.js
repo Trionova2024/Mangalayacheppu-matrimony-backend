@@ -52,7 +52,9 @@ async function main() {
 
   const users = [];
   for (const u of usersData) {
-    const user = await prisma.user.upsert({ where: { mobile: u.mobile }, update: {}, create: { ...u, isProfileComplete: u.isVerified } });
+    // (no upsert: mobile is a partial unique index, ON CONFLICT can't target it)
+    const user = await prisma.user.findFirst({ where: { mobile: u.mobile, isDeleted: false } })
+              || await prisma.user.create({ data: { ...u, isProfileComplete: u.isVerified } });
     users.push(user);
   }
   console.log(`✅  Users: ${users.length} seeded`);

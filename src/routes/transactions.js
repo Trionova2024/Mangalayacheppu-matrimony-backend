@@ -1,5 +1,6 @@
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { VISIBLE_TRANSACTION } = require("../utils/softDelete");
 const adminAuth = require("../middleware/adminAuth");
 
 router.get("/stats", adminAuth, async (_req, res) => {
@@ -7,11 +8,11 @@ router.get("/stats", adminAuth, async (_req, res) => {
     const now        = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
     const [total, monthly, totalCount, completedCount, failedCount] = await Promise.all([
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED" } }),
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED", createdAt: { gte: monthStart } } }),
-      prisma.transaction.count(),
-      prisma.transaction.count({ where: { status: "COMPLETED" } }),
-      prisma.transaction.count({ where: { status: "FAILED" } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED", createdAt: { gte: monthStart } } }),
+      prisma.transaction.count({ where: VISIBLE_TRANSACTION }),
+      prisma.transaction.count({ where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } }),
+      prisma.transaction.count({ where: { ...VISIBLE_TRANSACTION, status: "FAILED" } }),
     ]);
     const successRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
     res.json({
@@ -33,7 +34,7 @@ router.get("/", adminAuth, async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 50);
     const { status, paymentMethod } = req.query;
 
-    const where = {};
+    const where = { ...VISIBLE_TRANSACTION };
     if (status) where.status = String(status).toUpperCase();
     if (paymentMethod) where.paymentMethod = String(paymentMethod).toUpperCase();
 
@@ -77,14 +78,16 @@ router.get("/", adminAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// SOFT delete — the row is kept (payment proof / IAP idempotency) but hidden from admin views
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
-    await prisma.transaction.delete({ where: { id: req.params.id } });
+    const { count } = await prisma.transaction.updateMany({
+      where: { id: req.params.id, isDeleted: false },
+      data:  { isDeleted: true },
+    });
+    if (!count) return res.status(404).json({ message: "Transaction not found" });
     res.json({ data: null });
-  } catch (err) {
-    if (err.code === "P2025") return res.status(404).json({ message: "Transaction not found" });
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 function titleCase(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s; }

@@ -1,6 +1,7 @@
 // dashboard.js
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { LIVE_USER, VISIBLE_TRANSACTION, NOT_OWNED_BY_DELETED_USER } = require("../utils/softDelete");
 const adminAuth = require("../middleware/adminAuth");
 
 router.get("/stats", adminAuth, async (_req, res) => {
@@ -10,10 +11,10 @@ router.get("/stats", adminAuth, async (_req, res) => {
     const [totalUsers, userGrowth, allRev, monthRev, openTickets, pendingApprovals, newMembers] = await Promise.all([
       prisma.user.count(),
       prisma.user.count({ where: { createdAt: { gte: monthStart } } }),
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED" } }),
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED", createdAt: { gte: monthStart } } }),
-      prisma.supportTicket.count({ where: { status: { in: ["OPEN","PENDING"] } } }),
-      prisma.profileApproval.count({ where: { status: "PENDING" } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED", createdAt: { gte: monthStart } } }),
+      prisma.supportTicket.count({ where: { ...NOT_OWNED_BY_DELETED_USER, status: { in: ["OPEN","PENDING"] } } }),
+      prisma.profileApproval.count({ where: { status: "PENDING", user: LIVE_USER } }),
       prisma.user.findMany({ where: { createdAt: { gte: monthStart } }, orderBy: { createdAt: "desc" }, take: 8, select: { id: true, name: true, status: true, createdAt: true } }),
     ]);
     res.json({ data: { totalUsers, userGrowth, totalRevenue: allRev._sum.amount || 0, monthRevenue: monthRev._sum.amount || 0, openTickets, pendingApprovals, newMembers } });
@@ -29,6 +30,7 @@ router.get("/revenue", adminAuth, async (req, res) => {
 
     const txns = await prisma.transaction.findMany({
       where: {
+        ...VISIBLE_TRANSACTION,
         status: "COMPLETED",
         createdAt: {
           gte: startOfYear,

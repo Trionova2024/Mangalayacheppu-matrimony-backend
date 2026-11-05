@@ -14,9 +14,18 @@ module.exports = async function userAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user    = await prisma.user.findUnique({ where: { id: payload.id } });
+    const user    = await prisma.user.findUnique({ where: { id: payload.id } }); // excludes soft-deleted
 
-    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!user) {
+      // Soft-deleted account with a still-valid token → force logout in the app
+      const deleted = await prisma.user.findFirst({ where: { id: payload.id, isDeleted: true }, select: { status: true } });
+      if (deleted) {
+        return res.status(401).json(deleted.status === "BANNED"
+          ? { message: "This account has been banned. Contact support.", code: "ACCOUNT_BANNED" }
+          : { message: "This account has been deleted.", code: "ACCOUNT_DELETED" });
+      }
+      return res.status(401).json({ message: "User not found" });
+    }
 
     // ── Block check — enforces admin block/suspend in the app ──────────────
     if (user.status === "BLOCKED") {

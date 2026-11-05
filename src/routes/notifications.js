@@ -1,5 +1,6 @@
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { VISIBLE_TRANSACTION, VISIBLE_RECIPIENT } = require("../utils/softDelete");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 
@@ -8,7 +9,7 @@ router.get("/user", userAuth, async (req, res) => {
   console.log("[notifications/user] request from user:", req.user.id);
   try {
     const notifs = await prisma.notificationRecipient.findMany({
-      where:   { userId: req.user.id },
+      where:   { userId: req.user.id, ...VISIBLE_RECIPIENT },
       orderBy: { createdAt: "desc" },
       include: { notification: true },
       take:    50,
@@ -43,6 +44,7 @@ router.get("/unread-count", userAuth, async (req, res) => {
       where: {
         userId: req.user.id,
         isRead: false,
+        ...VISIBLE_RECIPIENT,
       },
     });
     res.json({
@@ -59,6 +61,7 @@ router.patch("/read-all", userAuth, async (req, res) => {
       where: {
         userId: req.user.id,
         isRead: false,
+        ...VISIBLE_RECIPIENT,
       },
       data: {
         isRead: true,
@@ -80,6 +83,7 @@ router.patch("/:id/read", userAuth, async (req, res) => {
       where: {
         notificationId,
         userId: req.user.id,
+        ...VISIBLE_RECIPIENT,
       },
     });
 
@@ -142,7 +146,9 @@ router.post("/", adminAuth, async (req, res) => {
 router.put("/:id", adminAuth, async (req, res) => {
   try {
     const { title, message, isDraft } = req.body;
-    const notif = await prisma.notification.update({ where: { id: req.params.id }, data: { title, message, isDraft: isDraft === true } });
+    const existing = await prisma.notification.findUnique({ where: { id: req.params.id } }); // deleted → 404
+    if (!existing) return res.status(404).json({ message: "Notification not found" });
+    const notif = await prisma.notification.update({ where: { id: existing.id }, data: { title, message, isDraft: isDraft === true } });
     res.json({ data: notif });
   } catch (err) {
     if (err.code === "P2025") return res.status(404).json({ message: "Notification not found" });
@@ -152,7 +158,9 @@ router.put("/:id", adminAuth, async (req, res) => {
 
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
-    await prisma.notification.delete({ where: { id: req.params.id } });
+    // SOFT delete — kept in DB, hidden from app & admin
+    const { count } = await prisma.notification.updateMany({ where: { id: req.params.id, isDeleted: false }, data: { isDeleted: true } });
+    if (!count) return res.status(404).json({ message: "Notification not found" });
     res.json({ data: null });
   } catch (err) {
     if (err.code === "P2025") return res.status(404).json({ message: "Notification not found" });
@@ -163,7 +171,9 @@ router.delete("/:id", adminAuth, async (req, res) => {
 // ── Admin: PATCH /api/notifications/:id/send  — send a saved draft ────────────
 router.patch("/:id/send", adminAuth, async (req, res) => {
   try {
-    const notif = await prisma.notification.update({ where: { id: req.params.id }, data: { isDraft: false, sentAt: new Date() } });
+    const existing = await prisma.notification.findUnique({ where: { id: req.params.id } }); // deleted → 404
+    if (!existing) return res.status(404).json({ message: "Notification not found" });
+    const notif = await prisma.notification.update({ where: { id: existing.id }, data: { isDraft: false, sentAt: new Date() } });
     const users = await prisma.user.findMany({ where: { fcmToken: { not: null }, status: "ACTIVE" }, select: { id: true, fcmToken: true } });
     await sendMulticast(users.map(u => u.fcmToken).filter(Boolean), notif.title, notif.message || "");
 
@@ -185,7 +195,7 @@ router.get("/expiring", adminAuth, async (req, res) => {
   try {
     const days = parseInt(req.query.days) || 7;
     const now  = new Date();
-    const txns = await prisma.transaction.findMany({ where: { status: "COMPLETED", packageId: { not: null } }, orderBy: { createdAt: "desc" }, include: { user: true, package: true } });
+    const txns = await prisma.transaction.findMany({ where: { ...VISIBLE_TRANSACTION, status: "COMPLETED", packageId: { not: null } }, orderBy: { createdAt: "desc" }, include: { user: true, package: true } });
     const seen = new Set();
     const expiring = [];
     for (const t of txns) {

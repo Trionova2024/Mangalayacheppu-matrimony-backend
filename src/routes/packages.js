@@ -1,6 +1,7 @@
 const router    = require("express").Router();
 const crypto    = require("crypto");
 const prisma    = require("../lib/prisma");
+const { LIVE_USER, VISIBLE_TRANSACTION } = require("../utils/softDelete");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 const jwt       = require("jsonwebtoken");
@@ -27,7 +28,7 @@ async function smartAuth(req, res, next) {
     const admin = await prisma.admin.findUnique({ where: { id: payload.id } });
     if (admin) { req.admin = admin; req.isAdmin = true; return next(); }
     // Try user
-    const user = await prisma.user.findUnique({ where: { id: payload.id } });
+    const user = await prisma.user.findUnique({ where: { id: payload.id } }); // excludes soft-deleted
     if (user) {
       if (user.status === "BLOCKED") return res.status(403).json({ message: "Account suspended.", code: "ACCOUNT_BLOCKED" });
       req.user = user; req.isAdmin = false; return next();
@@ -163,14 +164,14 @@ router.post("/create-order", userAuth, async (req, res) => {
 router.get("/stats", adminAuth, async (_req, res) => {
   try {
     const [revenue, credits, transactions] = await Promise.all([
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED" } }),
-      prisma.user.aggregate({ _sum: { credits: true } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } }),
+      prisma.user.aggregate({ _sum: { credits: true } }), // excludes soft-deleted users
       prisma.transaction.groupBy({
         by: ["packageId"],
         _count: { packageId: true },
         orderBy: { _count: { packageId: "desc" } },
         take: 1,
-        where: { packageId: { not: null }, status: "COMPLETED" },
+        where: { ...VISIBLE_TRANSACTION, packageId: { not: null }, package: { isDeleted: false }, status: "COMPLETED" },
       }),
     ]);
     let topPackage = "—";
@@ -179,7 +180,7 @@ router.get("/stats", adminAuth, async (_req, res) => {
       if (pkg) topPackage = pkg.name;
     }
     const totalUsers = await prisma.user.count();
-    const paidUsers  = await prisma.transaction.groupBy({ by: ["userId"], where: { status: "COMPLETED" } });
+    const paidUsers  = await prisma.transaction.groupBy({ by: ["userId"], where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } });
     res.json({ data: { totalRevenue: revenue._sum.amount || 0, totalCredits: credits._sum.credits || 0, topPackage, conversionRate: totalUsers > 0 ? Math.round((paidUsers.length / totalUsers) * 100) : 0 } });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -234,7 +235,7 @@ router.get("/approvals", adminAuth, async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 20);
-    const where = req.query.status ? { status: String(req.query.status).toUpperCase() } : {};
+    const where = { user: LIVE_USER, ...(req.query.status && { status: String(req.query.status).toUpperCase() }) };
     const [total, approvals] = await Promise.all([
       prisma.profileApproval.count({ where }),
       prisma.profileApproval.findMany({
@@ -247,7 +248,7 @@ router.get("/approvals", adminAuth, async (req, res) => {
             include: {
               personal: true,
               gallery: true,
-              transactions: { orderBy: { createdAt: "desc" }, take: 1, include: { package: true } },
+              transactions: { where: { isDeleted: false }, orderBy: { createdAt: "desc" }, take: 1, include: { package: true } },
             },
           },
         },
@@ -323,7 +324,8 @@ const GOOGLE_PLAY_PRODUCT_ID_CONFLICT = "This googlePlayProductId is already lin
 // Checked before calling Google so we never overwrite the Google product of another package.
 async function isGooglePlayProductIdTaken(productId, excludePackageId) {
   const owner = await prisma.package.findFirst({
-    where: { googlePlayProductId: productId, ...(excludePackageId && { NOT: { id: excludePackageId } }) },
+    // include deleted packages: Google Play product IDs can never be reused
+    where: { googlePlayProductId: productId, isDeleted: undefined, ...(excludePackageId && { NOT: { id: excludePackageId } }) },
     select: { id: true },
   });
   return Boolean(owner);
@@ -473,7 +475,10 @@ router.put("/:id", adminAuth, async (req, res) => {
 
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
-    const pkg = await prisma.package.delete({ where: { id: req.params.id } });
+    // SOFT delete — kept in DB so old transactions keep their package; hidden from app & admin
+    const existing = await prisma.package.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ message: "Package not found" });
+    const pkg = await prisma.package.update({ where: { id: existing.id }, data: { isDeleted: true } });
     // Google Play product IDs can never be deleted and reused, so the product is only deactivated
     if (isGooglePlaySyncEnabled() && pkg.googlePlayProductId) {
       await deactivateGooglePlayProduct(pkg.googlePlayProductId);

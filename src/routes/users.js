@@ -3,6 +3,34 @@ const prisma    = require("../lib/prisma");
 const adminAuth = require("../middleware/adminAuth");
 const userAuth  = require("../middleware/userAuth");
 const { getAgeFromDob } = require("../utils/age");
+const { softDeleteUser } = require("../services/userDeletionService");
+const { LIVE_USER } = require("../utils/softDelete");
+
+// Mobile / email uniqueness on a soft-delete basis (DB: partial unique index
+// WHERE "isDeleted" = false):
+//  - taken by a live user    → conflict
+//  - taken by a banned user  → conflict (banned numbers stay blocked)
+//  - taken by a deleted user → free to reuse
+async function findIdentifierConflict({ mobile, email, excludeId }) {
+  const or = [];
+  if (mobile) or.push({ mobile });
+  if (email)  or.push({ email });
+  if (!or.length) return null;
+  const clash = await prisma.user.findFirst({
+    where: {
+      OR: or,
+      ...(excludeId && { id: { not: excludeId } }),
+      AND: [{ OR: [{ isDeleted: false }, { isDeleted: true, status: "BANNED" }] }],
+      isDeleted: undefined, // handled by the AND above
+    },
+    select: { mobile: true, email: true, isDeleted: true },
+  });
+  if (!clash) return null;
+  const field = mobile && clash.mobile === mobile ? "Mobile" : "Email";
+  return clash.isDeleted
+    ? `${field} belongs to a banned account and cannot be used`
+    : `${field} already exists`;
+}
 
 // ── Admin: GET /api/users ──────────────────────────────────────────────────────
 router.get("/", adminAuth, async (req, res) => {
@@ -70,6 +98,9 @@ router.post("/", adminAuth, async (req, res) => {
 
     const creditNum = Number(credits);
     const validCredits = !isNaN(creditNum) && Number.isInteger(creditNum) && creditNum >= 0 ? creditNum : 0;
+
+    const createConflict = await findIdentifierConflict({ mobile: trimmedMobile, email: cleanEmail });
+    if (createConflict) return res.status(409).json({ message: createConflict });
 
     const user = await prisma.$transaction(async (tx) => {
       const createdUser = await tx.user.create({
@@ -170,8 +201,11 @@ router.put("/:id", adminAuth, async (req, res) => {
       ...(caste !== undefined && { caste: String(caste).trim() }),
     };
 
+    const updateConflict = await findIdentifierConflict({ mobile: trimmedMobile, email: cleanEmail, excludeId: req.params.id });
+    if (updateConflict) return res.status(409).json({ message: updateConflict });
+
     const user = await prisma.$transaction(async (tx) => {
-      const existing = await tx.user.findUnique({ where: { id: req.params.id } });
+      const existing = await tx.user.findUnique({ where: { id: req.params.id } }); // soft-deleted → 404
       if (!existing) {
         const notFoundErr = new Error("User not found");
         notFoundErr.status = 404;
@@ -207,15 +241,13 @@ router.put("/:id", adminAuth, async (req, res) => {
   }
 });
 
-// ── Admin: DELETE /api/users/:id ──────────────────────────────────────────────
+// ── Admin: DELETE /api/users/:id  — SOFT delete (never removes the row) ───────
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
-    await prisma.user.delete({ where: { id: req.params.id } });
+    const deleted = await softDeleteUser(req.params.id);
+    if (!deleted) return res.status(404).json({ message: "User not found" });
     res.json({ data: null });
-  } catch (err) {
-    if (err.code === "P2025") return res.status(404).json({ message: "User not found" });
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 // ── Admin: PATCH /api/users/:id/credits ───────────────────────────────────────
@@ -305,7 +337,7 @@ router.patch("/:id/block", adminAuth, async (req, res) => {
 router.get("/reports", adminAuth, async (req, res) => {
   try {
     const { status, category, startDate, endDate, from, to } = req.query;
-    const where = {};
+    const where = { accused: LIVE_USER, reporter: LIVE_USER }; // hide soft-deleted users' reports
     if (status) {
       where.status = String(status).toUpperCase();
     }
@@ -353,7 +385,8 @@ router.patch("/reports/:id/action", adminAuth, async (req, res) => {
         if (fb) fb.messaging().send({ token: report.accused.fcmToken, notification: { title: "Account Suspended", body: "Your account has been temporarily suspended due to a violation." } }).catch(() => {});
       }
     } else if (action === "BANNED") {
-      await prisma.user.delete({ where: { id: report.accusedId } });
+      // Soft delete (isDeleted = true, status BANNED) — the number cannot register again
+      await softDeleteUser(report.accusedId, { banned: true });
     } else if (action === "WARNED") {
       if (report.accused.fcmToken) {
         const fb = require("../lib/firebase");

@@ -6,6 +6,7 @@ const prisma    = require("../lib/prisma");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 const { authLimiter } = require("../middleware/rateLimiter");
+const { findBannedUserByMobile, BANNED_RESPONSE } = require("../services/userDeletionService");
 
 function makeToken(id) {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || "7d" });
@@ -43,8 +44,11 @@ router.post("/login", authLimiter, async (req, res) => {
 
     // ── Flutter login (mobile only) ────────────────────────────────────────
     if (mobile) {
-      const user = await prisma.user.findUnique({ where: { mobile } });
-      if (!user) return res.status(404).json({ message: "User not found. Please sign up." });
+      const user = await prisma.user.findFirst({ where: { mobile, isDeleted: false } });
+      if (!user) {
+        if (await findBannedUserByMobile(mobile)) return res.status(403).json(BANNED_RESPONSE);
+        return res.status(404).json({ message: "User not found. Please sign up." });
+      }
       if (user.status === "BLOCKED")
         return res.status(403).json({ message: "Account suspended. Contact support.", code: "ACCOUNT_BLOCKED" });
       return res.json({ success: true, message: "OTP sent via Firebase" });
@@ -65,8 +69,10 @@ router.post("/signup", authLimiter, async (req, res) => {
     const config = await prisma.appConfig.findUnique({ where: { id: "singleton" } });
     const defaultCredits = config?.defaultCredits ?? 3;
 
-    let user = await prisma.user.findUnique({ where: { mobile } });
+    let user = await prisma.user.findFirst({ where: { mobile, isDeleted: false } });
     if (!user) {
+      // A deleted account's number can register again as a NEW user; a banned number cannot
+      if (await findBannedUserByMobile(mobile)) return res.status(403).json(BANNED_RESPONSE);
       user = await prisma.user.create({
         data: { mobile, name, credits: defaultCredits, freeContactsLeft: defaultCredits, status: "PENDING", isVerified: false },
       });
@@ -99,9 +105,9 @@ router.post("/verify-otp", authLimiter, async (req, res) => {
       console.warn("Firebase verify skipped:", fbErr.message);
     }
 
-    let user = await prisma.user.findUnique({ where: { mobile: decodedMobile } });
+    let user = await prisma.user.findFirst({ where: { mobile: decodedMobile, isDeleted: false } });
     if (!user && mobile && mobile !== decodedMobile) {
-      user = await prisma.user.findUnique({ where: { mobile } });
+      user = await prisma.user.findFirst({ where: { mobile, isDeleted: false } });
     }
     if (!user) {
       const stripped   = (decodedMobile || "").replace(/^\+91/, "").trim();
@@ -109,11 +115,17 @@ router.post("/verify-otp", authLimiter, async (req, res) => {
       user = await prisma.user.findFirst({
         where: {
           mobile: { in: [decodedMobile, stripped, withPrefix, mobile].filter(Boolean) },
+          isDeleted: false,
         },
       });
     }
 
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      const stripped = (decodedMobile || "").replace(/^\+91/, "").trim();
+      if (await findBannedUserByMobile([decodedMobile, stripped, `+91${stripped}`, mobile]))
+        return res.status(403).json(BANNED_RESPONSE);
+      return res.status(404).json({ message: "User not found" });
+    }
     if (user.status === "BLOCKED")
       return res.status(403).json({ message: "Account suspended. Contact support.", code: "ACCOUNT_BLOCKED" });
 
@@ -137,8 +149,11 @@ router.post("/verify-otp", authLimiter, async (req, res) => {
 // ── POST /api/auth/resend-otp ─────────────────────────────────────────────────
 router.post("/resend-otp", authLimiter, async (req, res) => {
   const { mobile } = req.body;
-  const user = await prisma.user.findUnique({ where: { mobile } }).catch(() => null);
-  if (!user) return res.status(404).json({ message: "User not found" });
+  const user = await prisma.user.findFirst({ where: { mobile, isDeleted: false } }).catch(() => null);
+  if (!user) {
+    if (await findBannedUserByMobile(mobile).catch(() => null)) return res.status(403).json(BANNED_RESPONSE);
+    return res.status(404).json({ message: "User not found" });
+  }
   res.json({ success: true, message: "OTP resent via Firebase" });
 });
 
