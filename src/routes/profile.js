@@ -570,6 +570,9 @@ function formatProfile(user, { showHoroscope = false } = {}) {
     isVerified:       user.isVerified,
     isProfileComplete: user.isProfileComplete,
     freeContactsLeft: user.freeContactsLeft,
+    credits:          user.credits || 0,                                   // purchased credits
+    purchasedCredits: user.credits || 0,
+    totalCredits:     (user.freeContactsLeft || 0) + (user.credits || 0),
     status:           user.status,
     personal:         user.personal     ? formatPersonal(user.personal, showHoroscope) : null,
     family:           user.family       ? user.family                       : null,
