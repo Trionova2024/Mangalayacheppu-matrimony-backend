@@ -176,42 +176,47 @@ model ProfileApproval {
 // PACKAGES & PAYMENTS  (Flutter buys → credits added → Admin sees transaction)
 // ─────────────────────────────────────────────────────────────────────────────
 model Package {
-  id           String   @id @default(uuid())
-  name         String
-  title        String?
-  subtitle     String?
-  credits      Int
-  amount       Float
-  price        Int?
-  validityDays Int      @default(90)
-  description  String?
-  status       String   @default("ACTIVE") // ACTIVE | INACTIVE
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  name                String
+  title               String?
+  subtitle            String?
+  credits             Int
+  amount              Float
+  price               Int?
+  validityDays        Int      @default(90)
+  description         String?
+  status              String   @default("ACTIVE") // ACTIVE | INACTIVE
+  googlePlayProductId String?  @unique
+  appleProductId      String?  @unique
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   transactions Transaction[]
 }
 
 model Transaction {
-  id             String   @id @default(uuid())
-  userId         String
-  packageId      String?
-  amount         Float
-  paymentMethod  String   @default("RAZORPAY")
-  cardInfo       String?
-  razorpayOrderId   String?
-  razorpayPaymentId String?
-  razorpaySignature String?
-  status         String   @default("COMPLETED") // COMPLETED | FAILED | PENDING | REFUNDED
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                String    @id @default(uuid())
+  userId            String
+  packageId         String?
+  amount            Float
+  paymentMethod     String    @default("RAZORPAY")
+  paymentOrderId    String?
+  paymentId         String?
+  purchaseToken     String?
+  productId         String?
+  expiresAt         DateTime?
+  metadata          Json?
+  status            String    @default("COMPLETED") // COMPLETED | FAILED | PENDING | REFUNDED
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   package Package? @relation(fields: [packageId], references: [id], onDelete: SetNull)
 
   @@index([userId, status])
   @@index([status, createdAt])
-  @@index([razorpayPaymentId])
+  @@index([paymentOrderId])
+  @@index([purchaseToken])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,7 +370,5 @@ model AppConfig {
   id             String   @id @default("singleton")
   defaultCredits Int      @default(3)
   validityMonths Int      @default(3)
-  razorpayKeyId  String?
-  razorpaySecret String?
   updatedAt      DateTime @updatedAt
 }

@@ -5,6 +5,14 @@ const path    = require("path");
 const { generalLimiter } = require("./middleware/rateLimiter");
 
 // ── Startup Environment Hardening ─────────────────────────────────────────────
+const { validatePaymentConfig } = require("./config/paymentConfig");
+try {
+  validatePaymentConfig();
+} catch (configErr) {
+  console.error("FATAL: Payment provider configuration error:", configErr.message);
+  process.exit(1);
+}
+
 if (process.env.NODE_ENV === "production") {
   const weakPlaceholders = [
     "change_this_to_a_long_random_secret_min_32_chars",
@@ -57,8 +65,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Global rate limiting across /api endpoints
-app.use("/api", generalLimiter);
+// Global rate limiting across /api endpoints (bypass for store server notifications)
+app.use("/api", (req, res, next) => {
+  if (
+    req.path === "/payments/apple/notifications"
+  ) {
+    return next();
+  }
+  return generalLimiter(req, res, next);
+});
 
 // Serve uploaded photos (gallery images)
 app.use("/uploads", express.static(path.join(__dirname, "..", process.env.UPLOAD_DIR || "uploads")));
@@ -70,6 +85,7 @@ app.use("/api/profile",       require("./routes/profile"));
 app.use("/api/home",          require("./routes/home"));
 app.use("/api/gallery",       require("./routes/gallery"));
 app.use("/api/packages",      require("./routes/packages"));
+app.use("/api/payments",      require("./routes/payments"));
 app.use("/api/privacy",       require("./routes/privacy"));
 app.use("/api/dropdowns",     require("./routes/dropdowns"));
 app.use("/api/notifications", require("./routes/notifications"));
