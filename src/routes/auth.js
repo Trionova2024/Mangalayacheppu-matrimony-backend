@@ -5,7 +5,6 @@ const bcrypt    = require("bcryptjs");
 const prisma    = require("../lib/prisma");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
-const { authLimiter } = require("../middleware/rateLimiter");
 const { findBannedUserByMobile, BANNED_RESPONSE } = require("../services/userDeletionService");
 
 function makeToken(id) {
@@ -28,7 +27,7 @@ function userResponse(user) {
 // ── POST /api/auth/login
 // Admin sends { email, password } → admin JWT
 // Flutter sends { mobile } → OTP trigger
-router.post("/login", authLimiter, async (req, res) => {
+router.post("/login", async (req, res) => {
   try {
     const { email, password, mobile } = req.body;
 
@@ -61,7 +60,7 @@ router.post("/login", authLimiter, async (req, res) => {
 });
 
 // ── POST /api/auth/signup ──────────────────────────────────────────────────────
-router.post("/signup", authLimiter, async (req, res) => {
+router.post("/signup", async (req, res) => {
   try {
     const { mobile, name } = req.body;
     if (!mobile || !name) return res.status(400).json({ message: "mobile and name required" });
@@ -88,7 +87,7 @@ router.post("/signup", authLimiter, async (req, res) => {
 });
 
 // ── POST /api/auth/verify-otp ─────────────────────────────────────────────────
-router.post("/verify-otp", authLimiter, async (req, res) => {
+router.post("/verify-otp", async (req, res) => {
   try {
     const { mobile, firebaseIdToken } = req.body;
     if (!mobile || !firebaseIdToken)
@@ -147,7 +146,7 @@ router.post("/verify-otp", authLimiter, async (req, res) => {
 });
 
 // ── POST /api/auth/resend-otp ─────────────────────────────────────────────────
-router.post("/resend-otp", authLimiter, async (req, res) => {
+router.post("/resend-otp", async (req, res) => {
   const { mobile } = req.body;
   const user = await prisma.user.findFirst({ where: { mobile, isDeleted: false } }).catch(() => null);
   if (!user) {

@@ -65,11 +65,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Global rate limiting across /api endpoints (bypass for store server notifications)
+// Registration / login endpoints — no rate limiting at all
+const UNLIMITED_PATHS = new Set([
+  "/payments/apple/notifications", // store server notifications
+  "/auth/login",
+  "/auth/signup",
+  "/auth/verify-otp",
+  "/auth/resend-otp",
+]);
+
+// Global rate limiting across /api endpoints (bypasses UNLIMITED_PATHS)
 app.use("/api", (req, res, next) => {
-  if (
-    req.path === "/payments/apple/notifications"
-  ) {
+  if (UNLIMITED_PATHS.has(req.path)) {
     return next();
   }
   return generalLimiter(req, res, next);
