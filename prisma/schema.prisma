@@ -93,6 +93,7 @@ model PersonalProfile {
   subCaste         String?
   nakshatram       String?
   native           String?
+  city             String?
   aboutMe          String?
   interests        String[]  @default([])
   horoscopeUrl     String?

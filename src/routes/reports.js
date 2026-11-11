@@ -73,6 +73,7 @@ router.get("/data", adminAuth, async (req, res) => {
               age:      age || "—",
               phone:    u.mobile,
               location: p?.native || "—",
+              city:     p?.city || "—",
               status:   u.status,
               credits:  u.credits,
               date:     fmtDate(u.createdAt),

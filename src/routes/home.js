@@ -181,6 +181,7 @@ function formatCard(user) {
     name:         p?.fullName || user.name,
     age:          age,
     location:     p?.native || null,
+    city:         p?.city || null,
     bio:          p?.aboutMe || null,
     imageUrl:     photo,
     isVerified:   user.isVerified,

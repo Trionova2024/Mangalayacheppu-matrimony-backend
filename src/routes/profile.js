@@ -155,7 +155,6 @@ router.get("/interests", userAuth, async (req, res) => {
 router.post("/personal", userAuth, async (req, res) => {
   try {
     const d = req.body;
-    console.log("[profile/personal] userId:", req.user.id, "body:", JSON.stringify(d, null, 2));
 
     // Validate DOB if any DOB field is provided
     const dobDay   = d.dob?.day   !== undefined ? d.dob.day   : d.dobDay;
@@ -190,6 +189,7 @@ router.post("/personal", userAuth, async (req, res) => {
       subCaste:         d.subCaste,
       nakshatram:       d.nakshatram,
       native:           d.native,
+      city:             d.city,
       aboutMe:          d.aboutMe,
       interests:        d.interests || [],
     };
@@ -608,6 +608,7 @@ function formatPersonal(p) {
     subCaste:         p.subCaste,
     nakshatram:       p.nakshatram,
     native:           p.native,
+    city:             p.city || null,
     aboutMe:          p.aboutMe,
     interests:        p.interests,
     horoscopeUrl:     p.horoscopeUrl || null,
@@ -629,6 +630,7 @@ function formatInterestTarget(target) {
     gender:       p?.gender || null,
     location:     p?.native || null,
     native:       p?.native || null,
+    city:         p?.city || null,
     bio:          p?.aboutMe || null,
     aboutMe:      p?.aboutMe || null,
     imageUrl:     photo,
