@@ -72,9 +72,10 @@ npm install
 # Copy production env
 cp .env.production .env
 
-# Generate Prisma client + push schema
+# Generate Prisma client + apply DB migrations (not "db push": migrations carry data copies
+# and partial unique indexes that keep purchases from being credited twice)
 npx prisma generate
-npx prisma db push --accept-data-loss
+npx prisma migrate deploy
 
 # Seed admin account + sample data
 node src/lib/seed.js

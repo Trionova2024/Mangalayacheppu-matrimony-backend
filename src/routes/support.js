@@ -1,5 +1,6 @@
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { NOT_OWNED_BY_DELETED_USER } = require("../utils/softDelete");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 
@@ -28,8 +29,8 @@ router.get("/", adminAuth, async (req, res) => {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 50);
     const [total, tickets] = await Promise.all([
-      prisma.supportTicket.count(),
-      prisma.supportTicket.findMany({ skip: (page - 1) * limit, take: limit, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }),
+      prisma.supportTicket.count({ where: NOT_OWNED_BY_DELETED_USER }),
+      prisma.supportTicket.findMany({ where: NOT_OWNED_BY_DELETED_USER, skip: (page - 1) * limit, take: limit, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }),
     ]);
     res.json({ data: { data: tickets, total, page, limit } });
   } catch (err) { res.status(500).json({ message: err.message }); }
@@ -37,7 +38,7 @@ router.get("/", adminAuth, async (req, res) => {
 
 router.get("/:id", adminAuth, async (req, res) => {
   try {
-    const ticket = await prisma.supportTicket.findUnique({ where: { id: req.params.id }, include: { messages: { orderBy: { createdAt: "asc" } } } });
+    const ticket = await prisma.supportTicket.findFirst({ where: { id: req.params.id, ...NOT_OWNED_BY_DELETED_USER }, include: { messages: { orderBy: { createdAt: "asc" } } } });
     if (!ticket) return res.status(404).json({ message: "Ticket not found" });
     res.json({ data: ticket });
   } catch (err) { res.status(500).json({ message: err.message }); }

@@ -1,0 +1,309 @@
+{
+  "info": {
+    "_postman_id": "matrimony-payments-iap-cashfree-v1",
+    "name": "Matrimony Payments API (In-App Purchase)",
+    "description": "Complete payment integration endpoints for Frontend Developers (Flutter iOS & Android):\n\n1. Payment Gateway Configuration\n2. Packages & Plan List\n3. Apple In-App Purchase (StoreKit 2 / Receipt Verification)\n4. Google Play In-App Purchase (Android Publisher API) + failed / cancelled purchase reporting\n5. Webhook (Apple App Store Server Notifications)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01. Get Payment Provider Config",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "config"
+          ]
+        },
+        "description": "Public endpoint. Returns the In-App Purchase platform flags (Google Play / Apple) the app should use for checkout."
+      },
+      "response": [
+        {
+          "name": "Example Response - IAP Mode",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"provider\": \"IAP\",\n    \"isIap\": true,\n    \"isGooglePlay\": true,\n    \"isAppleIap\": true\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "02. Get Packages (with Store Product IDs)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/packages",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "packages"
+          ]
+        },
+        "description": "Returns active package plans with credit counts, price, and both `googlePlayProductId` and `appleProductId`."
+      },
+      "response": [
+        {
+          "name": "Example Response",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"paymentProvider\": \"IAP\",\n    \"packages\": [\n      {\n        \"id\": \"pkg-bronze\",\n        \"title\": \"Bronze\",\n        \"subtitle\": \"10 contact credits\",\n        \"price\": 299,\n        \"contacts\": 10,\n        \"validityDays\": 30,\n        \"googlePlayProductId\": \"sub_bronze_monthly\",\n        \"appleProductId\": \"com.trionova.bronze\"\n      }\n    ],\n    \"freeUser\": {\n      \"contacts\": 3,\n      \"validityDays\": 90,\n      \"description\": \"3 free contacts valid for 3 months\"\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "03. iOS - Verify Apple In-App Purchase",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"com.trionova.bronze\",\n  \"signedTransaction\": \"<PASTE_STOREKIT_2_JWS_STRING_OR_RECEIPT_HERE>\",\n  \"transactionId\": \"2000000582910241\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/apple/verify",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "apple",
+            "verify"
+          ]
+        },
+        "description": "Call from iOS after in_app_purchase completes. Verifies the Apple StoreKit 2 JWS token or base64 receipt with Apple, activates credits atomically."
+      },
+      "response": [
+        {
+          "name": "Success (200 OK)",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"status\": \"COMPLETED\",\n  \"message\": \"10 credits added to your account\",\n  \"data\": {\n    \"status\": \"COMPLETED\",\n    \"orderId\": \"2000000582910241\",\n    \"credits\": 10,\n    \"alreadyProcessed\": false,\n    \"package\": {\n      \"id\": \"pkg-bronze\",\n      \"title\": \"Bronze\",\n      \"price\": 299,\n      \"contacts\": 10,\n      \"validityDays\": 30\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "04. Android - Verify Google Play In-App Purchase",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"sub_bronze_monthly\",\n  \"purchaseToken\": \"<PASTE_GOOGLE_PURCHASE_TOKEN_HERE>\",\n  \"packageName\": \"com.trionova.matrimony\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/google-play/verify",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "google-play",
+            "verify"
+          ]
+        },
+        "description": "Call from Android after Google Play Billing completes. Verifies purchase directly with Google Android Publisher API, acknowledges/consumes it, and awards credits."
+      },
+      "response": [
+        {
+          "name": "Success (200 OK)",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"status\": \"COMPLETED\",\n  \"message\": \"10 credits added to your account\",\n  \"data\": {\n    \"status\": \"COMPLETED\",\n    \"orderId\": \"GPA.3312-5819-2041-98721\",\n    \"credits\": 10,\n    \"alreadyProcessed\": false,\n    \"package\": {\n      \"id\": \"pkg-bronze\",\n      \"title\": \"Bronze\",\n      \"price\": 299,\n      \"contacts\": 10,\n      \"validityDays\": 30\n    }\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "05. Android - Report Failed / Cancelled Google Play Purchase",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{userToken}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/google-play/failed",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "google-play",
+            "failed"
+          ]
+        },
+        "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned."
+      },
+      "response": [
+        {
+          "name": "200 - Cancelled by user",
+          "originalRequest": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/google-play/failed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "google-play",
+                "failed"
+              ]
+            },
+            "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned."
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"success\": false,\n  \"status\": \"FAILED\",\n  \"message\": \"Payment cancelled by user\",\n  \"data\": {\n    \"status\": \"FAILED\",\n    \"message\": \"Payment cancelled by user\"\n  }\n}"
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "pm.test('Failure is recorded (or purchase already completed)', function () {",
+              "    const jsonData = pm.response.json();",
+              "    pm.expect(['FAILED', 'COMPLETED']).to.include(jsonData.status);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06. Webhook - Apple App Store Server Notifications v2",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"signedPayload\": \"<APPLE_JWS_SIGNED_PAYLOAD>\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/payments/apple/notifications",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "payments",
+            "apple",
+            "notifications"
+          ]
+        },
+        "description": "Configured in App Store Connect under Server Notifications v2."
+      }
+    }
+  ]
+}

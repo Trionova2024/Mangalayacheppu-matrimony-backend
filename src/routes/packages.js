@@ -1,10 +1,18 @@
 const router    = require("express").Router();
 const crypto    = require("crypto");
 const prisma    = require("../lib/prisma");
+const { LIVE_USER, VISIBLE_TRANSACTION } = require("../utils/softDelete");
 const userAuth  = require("../middleware/userAuth");
 const adminAuth = require("../middleware/adminAuth");
 const jwt       = require("jsonwebtoken");
 const { getAgeFromDob } = require("../utils/age");
+const {
+  GooglePlayCatalogError,
+  isGooglePlaySyncEnabled,
+  buildGooglePlayProductId,
+  syncGooglePlayProduct,
+  deactivateGooglePlayProduct,
+} = require("../services/googlePlayCatalogService");
 
 // ── Smart auth middleware: detects admin vs flutter token ──────────────────────
 async function smartAuth(req, res, next) {
@@ -20,7 +28,7 @@ async function smartAuth(req, res, next) {
     const admin = await prisma.admin.findUnique({ where: { id: payload.id } });
     if (admin) { req.admin = admin; req.isAdmin = true; return next(); }
     // Try user
-    const user = await prisma.user.findUnique({ where: { id: payload.id } });
+    const user = await prisma.user.findUnique({ where: { id: payload.id } }); // excludes soft-deleted
     if (user) {
       if (user.status === "BLOCKED") return res.status(403).json({ message: "Account suspended.", code: "ACCOUNT_BLOCKED" });
       req.user = user; req.isAdmin = false; return next();
@@ -45,9 +53,16 @@ router.get("/", smartAuth, async (req, res) => {
     res.json({
       success: true,
       data: {
+        paymentProvider: "IAP",
         packages: packages.map(p => ({
-          id: p.id, title: p.title || p.name, subtitle: p.subtitle || p.description,
-          price: p.price || Math.round(p.amount), contacts: p.credits, validityDays: p.validityDays,
+          id: p.id,
+          title: p.title || p.name,
+          subtitle: p.subtitle || p.description,
+          price: p.price || Math.round(p.amount),
+          contacts: p.credits,
+          validityDays: p.validityDays,
+          googlePlayProductId: p.googlePlayProductId || null,
+          appleProductId:      p.appleProductId || null,
         })),
         freeUser: {
           contacts: config?.defaultCredits || 3,
@@ -134,334 +149,13 @@ router.post("/create-order", userAuth, async (req, res) => {
       });
     }
 
-    // ── CASE B: NON-ZERO PACKAGE (Real Gateway Flow) ───────────────────────────
-    const config = await prisma.appConfig.findUnique({ where: { id: "singleton" } });
-    const keyId  = config?.razorpayKeyId || process.env.RAZORPAY_KEY_ID || "";
-    const secret = config?.razorpaySecret || process.env.RAZORPAY_KEY_SECRET || "";
-
-    if (!keyId || !secret) {
-      return res.status(500).json({
-        success: false,
-        message: "Payment gateway configuration is missing",
-      });
-    }
-
-    // Create real Razorpay order via Razorpay REST API
-    let orderId;
-    try {
-      const auth = Buffer.from(`${keyId}:${secret}`).toString("base64");
-      const rzpRes = await fetch("https://api.razorpay.com/v1/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type":  "application/json",
-          "Authorization": `Basic ${auth}`,
-        },
-        body: JSON.stringify({
-          amount:   Math.round(pkg.amount * 100), // paise
-          currency: "INR",
-          receipt:  `rcpt_${req.user.id.slice(0, 8)}_${Date.now()}`,
-          notes: {
-            userId:    req.user.id,
-            packageId: pkg.id,
-          },
-        }),
-      });
-
-      const rzpData = await rzpRes.json();
-      if (!rzpRes.ok || !rzpData.id) {
-        return res.status(502).json({
-          success: false,
-          message: "Failed to create payment order with gateway",
-          error:   rzpData.error?.description || "Gateway error",
-        });
-      }
-      orderId = rzpData.id;
-    } catch (netErr) {
-      return res.status(502).json({
-        success: false,
-        message: "Payment gateway network error",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        orderId,
-        amount:   Math.round(pkg.amount * 100),
-        currency: "INR",
-        keyId,
-        package: {
-          id: pkg.id, title: pkg.title || pkg.name, subtitle: pkg.subtitle,
-          price: pkg.price || Math.round(pkg.amount), contacts: pkg.credits, validityDays: pkg.validityDays,
-        },
-      },
-    });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-// ── Flutter: POST /api/packages/verify-payment ────────────────────────────────
-router.post("/verify-payment", userAuth, async (req, res) => {
-  try {
-    const { orderId, paymentId, signature, packageId, status, error } = req.body;
-
-    if (!packageId) {
-      return res.status(400).json({
-        success: false,
-        status:  "FAILED",
-        message: "packageId is required",
-        data:    { status: "FAILED", message: "packageId is required" },
-      });
-    }
-
-    const pkg = await prisma.package.findUnique({ where: { id: packageId } });
-    if (!pkg) {
-      return res.status(404).json({
-        success: false,
-        status:  "FAILED",
-        message: "Package not found",
-        data:    { status: "FAILED", message: "Package not found" },
-      });
-    }
-
-    // ── Handle Free Offer in verify-payment ────────────────────────────────────
-    if (pkg.amount === 0) {
-      const existing = await prisma.transaction.findFirst({
-        where: { userId: req.user.id, packageId: pkg.id, status: "COMPLETED" },
-      });
-      if (existing) {
-        return res.json({
-          success: true,
-          status:  "COMPLETED",
-          message: "Offer already claimed",
-          data:    { status: "COMPLETED", alreadyProcessed: true },
-        });
-      }
-
-      await prisma.$transaction(async (tx) => {
-        await tx.transaction.create({
-          data: {
-            userId:        req.user.id,
-            packageId:     pkg.id,
-            amount:        0,
-            paymentMethod: "FREE_OFFER",
-            status:        "COMPLETED",
-          },
-        });
-        await tx.user.update({
-          where: { id: req.user.id },
-          data:  { credits: { increment: pkg.credits } },
-        });
-      });
-
-      return res.json({
-        success: true,
-        status:  "COMPLETED",
-        message: `${pkg.credits} credits added to your account`,
-        data:    { status: "COMPLETED", credits: pkg.credits },
-      });
-    }
-
-    // ── Check for explicit failure / cancellation from client ─────────────────
-    if (status === "FAILED" || status === "CANCELLED" || req.body.cancelled === true || error) {
-      if (orderId || paymentId) {
-        await prisma.transaction.create({
-          data: {
-            userId:            req.user.id,
-            packageId:         pkg.id,
-            amount:            pkg.amount,
-            paymentMethod:     "RAZORPAY",
-            razorpayOrderId:   orderId   || null,
-            razorpayPaymentId: paymentId || null,
-            status:            "FAILED",
-          },
-        });
-      }
-
-      return res.status(200).json({
-        success: false,
-        status:  "FAILED",
-        message: "Payment failed or was cancelled by user",
-        data: {
-          status:  "FAILED",
-          message: "Payment failed or was cancelled by user",
-        },
-      });
-    }
-
-    // ── Check duplicate payment (idempotency) ─────────────────────────────────
-    if (paymentId) {
-      const existingCompleted = await prisma.transaction.findFirst({
-        where: { razorpayPaymentId: paymentId, status: "COMPLETED" },
-      });
-      if (existingCompleted) {
-        return res.json({
-          success: true,
-          status:  "COMPLETED",
-          message: "Payment already processed",
-          data: {
-            status:           "COMPLETED",
-            alreadyProcessed: true,
-          },
-        });
-      }
-    }
-
-    // ── Signature Verification ────────────────────────────────────────────────
-    const config = await prisma.appConfig.findUnique({ where: { id: "singleton" } });
-    const secret = config?.razorpaySecret || process.env.RAZORPAY_KEY_SECRET || "";
-
-    if (!secret) {
-      return res.status(500).json({
-        success: false,
-        status:  "FAILED",
-        message: "Payment gateway configuration is missing",
-        data:    { status: "FAILED", message: "Server payment configuration missing" },
-      });
-    }
-
-    if (!orderId || !paymentId || !signature) {
-      return res.status(400).json({
-        success: false,
-        status:  "FAILED",
-        message: "Missing payment verification parameters (orderId, paymentId, signature required)",
-        data: {
-          status:  "FAILED",
-          message: "Missing payment verification parameters",
-        },
-      });
-    }
-
-    const expected = crypto.createHmac("sha256", secret).update(`${orderId}|${paymentId}`).digest("hex");
-    if (expected !== signature) {
-      // Record failed transaction
-      await prisma.transaction.create({
-        data: {
-          userId:            req.user.id,
-          packageId:         pkg.id,
-          amount:            pkg.amount,
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId,
-          razorpayPaymentId: paymentId,
-          razorpaySignature: signature,
-          status:            "FAILED",
-        },
-      });
-
-      return res.status(400).json({
-        success: false,
-        status:  "FAILED",
-        message: "Payment verification failed: invalid signature",
-        data: {
-          status:  "FAILED",
-          message: "Payment verification failed",
-        },
-      });
-    }
-
-    // ── Atomic Transaction & Credit Allocation ────────────────────────────────
-    await prisma.$transaction(async (tx) => {
-      // Re-verify duplicate within transaction lock
-      const alreadyDone = await tx.transaction.findFirst({
-        where: { razorpayPaymentId: paymentId, status: "COMPLETED" },
-      });
-      if (alreadyDone) return;
-
-      await tx.transaction.create({
-        data: {
-          userId:            req.user.id,
-          packageId:         pkg.id,
-          amount:            pkg.amount, // strictly from DB
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId,
-          razorpayPaymentId: paymentId,
-          razorpaySignature: signature,
-          status:            "COMPLETED",
-        },
-      });
-
-      await tx.user.update({
-        where: { id: req.user.id },
-        data:  { credits: { increment: pkg.credits } }, // strictly from DB
-      });
-    });
-
-    res.json({
-      success: true,
-      status:  "COMPLETED",
-      message: `${pkg.credits} credits added to your account`,
-      data: {
-        status:  "COMPLETED",
-        credits: pkg.credits,
-      },
-    });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-// ── Flutter: POST /api/packages/payment-failed ────────────────────────────────
-router.post("/payment-failed", userAuth, async (req, res) => {
-  try {
-    const { orderId, paymentId, packageId } = req.body;
-    let pkg = null;
-    if (packageId) {
-      pkg = await prisma.package.findUnique({ where: { id: packageId } });
-    }
-
-    if (packageId || orderId || paymentId) {
-      await prisma.transaction.create({
-        data: {
-          userId:            req.user.id,
-          packageId:         pkg?.id || null,
-          amount:            pkg?.amount || 0,
-          paymentMethod:     "RAZORPAY",
-          razorpayOrderId:   orderId   || null,
-          razorpayPaymentId: paymentId || null,
-          status:            "FAILED",
-        },
-      });
-    }
-
-    res.json({
+    // ── CASE B: PAID PACKAGE ─────────────────────────────────────────────────
+    // Paid packages are sold only through Google Play / Apple In-App Purchase
+    // (see /api/payments/google-play/verify and /api/payments/apple/verify).
+    return res.status(400).json({
       success: false,
-      status:  "FAILED",
-      message: "Payment failed",
-      data: {
-        status:  "FAILED",
-        message: "Payment failed",
-      },
-    });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-// ── Flutter: POST /api/packages/cancel ────────────────────────────────────────
-router.post("/cancel", userAuth, async (req, res) => {
-  try {
-    const { orderId, packageId } = req.body;
-    let pkg = null;
-    if (packageId) {
-      pkg = await prisma.package.findUnique({ where: { id: packageId } });
-    }
-
-    if (packageId || orderId) {
-      await prisma.transaction.create({
-        data: {
-          userId:          req.user.id,
-          packageId:       pkg?.id || null,
-          amount:          pkg?.amount || 0,
-          paymentMethod:   "RAZORPAY",
-          razorpayOrderId: orderId || null,
-          status:          "FAILED",
-        },
-      });
-    }
-
-    res.json({
-      success: false,
-      status:  "FAILED",
-      message: "Payment cancelled by user",
-      data: {
-        status:  "FAILED",
-        message: "Payment cancelled by user",
-      },
+      message: "Paid packages must be purchased through Google Play or the App Store.",
+      code: "IAP_PROVIDER_ACTIVE",
     });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -470,14 +164,14 @@ router.post("/cancel", userAuth, async (req, res) => {
 router.get("/stats", adminAuth, async (_req, res) => {
   try {
     const [revenue, credits, transactions] = await Promise.all([
-      prisma.transaction.aggregate({ _sum: { amount: true }, where: { status: "COMPLETED" } }),
-      prisma.user.aggregate({ _sum: { credits: true } }),
+      prisma.transaction.aggregate({ _sum: { amount: true }, where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } }),
+      prisma.user.aggregate({ _sum: { credits: true } }), // excludes soft-deleted users
       prisma.transaction.groupBy({
         by: ["packageId"],
         _count: { packageId: true },
         orderBy: { _count: { packageId: "desc" } },
         take: 1,
-        where: { packageId: { not: null }, status: "COMPLETED" },
+        where: { ...VISIBLE_TRANSACTION, packageId: { not: null }, package: { isDeleted: false }, status: "COMPLETED" },
       }),
     ]);
     let topPackage = "—";
@@ -486,7 +180,7 @@ router.get("/stats", adminAuth, async (_req, res) => {
       if (pkg) topPackage = pkg.name;
     }
     const totalUsers = await prisma.user.count();
-    const paidUsers  = await prisma.transaction.groupBy({ by: ["userId"], where: { status: "COMPLETED" } });
+    const paidUsers  = await prisma.transaction.groupBy({ by: ["userId"], where: { ...VISIBLE_TRANSACTION, status: "COMPLETED" } });
     res.json({ data: { totalRevenue: revenue._sum.amount || 0, totalCredits: credits._sum.credits || 0, topPackage, conversionRate: totalUsers > 0 ? Math.round((paidUsers.length / totalUsers) * 100) : 0 } });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -541,7 +235,7 @@ router.get("/approvals", adminAuth, async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 20);
-    const where = req.query.status ? { status: String(req.query.status).toUpperCase() } : {};
+    const where = { user: LIVE_USER, ...(req.query.status && { status: String(req.query.status).toUpperCase() }) };
     const [total, approvals] = await Promise.all([
       prisma.profileApproval.count({ where }),
       prisma.profileApproval.findMany({
@@ -554,7 +248,7 @@ router.get("/approvals", adminAuth, async (req, res) => {
             include: {
               personal: true,
               gallery: true,
-              transactions: { orderBy: { createdAt: "desc" }, take: 1, include: { package: true } },
+              transactions: { where: { isDeleted: false }, orderBy: { createdAt: "desc" }, take: 1, include: { package: true } },
             },
           },
         },
@@ -606,9 +300,40 @@ router.patch("/approvals/:id/reject", adminAuth, async (req, res) => {
   }
 });
 
+// Google Play product IDs must start with a lowercase letter or number and may only
+// contain lowercase letters, numbers, underscores and periods.
+const GOOGLE_PLAY_PRODUCT_ID_RE = /^[a-z0-9][a-z0-9_.]*$/;
+
+// Returns { value } (null clears the mapping) or { error } for an invalid product ID.
+function parseGooglePlayProductId(raw) {
+  if (raw === null || raw === "") return { value: null };
+  const value = String(raw).trim();
+  if (!value) return { value: null };
+  if (!GOOGLE_PLAY_PRODUCT_ID_RE.test(value)) {
+    return { error: "googlePlayProductId must start with a lowercase letter or number and contain only lowercase letters, numbers, underscores (_) and periods (.)" };
+  }
+  return { value };
+}
+
+function isGooglePlayProductIdConflict(err) {
+  return err.code === "P2002" && String(err.meta?.target || "").includes("googlePlayProductId");
+}
+
+const GOOGLE_PLAY_PRODUCT_ID_CONFLICT = "This googlePlayProductId is already linked to another package";
+
+// Checked before calling Google so we never overwrite the Google product of another package.
+async function isGooglePlayProductIdTaken(productId, excludePackageId) {
+  const owner = await prisma.package.findFirst({
+    // include deleted packages: Google Play product IDs can never be reused
+    where: { googlePlayProductId: productId, isDeleted: undefined, ...(excludePackageId && { NOT: { id: excludePackageId } }) },
+    select: { id: true },
+  });
+  return Boolean(owner);
+}
+
 router.post("/", adminAuth, async (req, res) => {
   try {
-    const { name, credits, amount, status, description, validityDays, title, subtitle } = req.body;
+    const { name, credits, amount, status, description, validityDays, title, subtitle, googlePlayProductId } = req.body;
     if (!name || String(name).trim() === "") {
       return res.status(400).json({ message: "Package name is required" });
     }
@@ -627,30 +352,55 @@ router.post("/", adminAuth, async (req, res) => {
       validDays = parsedDays;
     }
 
+    const productId = googlePlayProductId !== undefined ? parseGooglePlayProductId(googlePlayProductId) : { value: null };
+    if (productId.error) return res.status(400).json({ message: productId.error });
+
     const numCredits = Number(credits);
     const numAmount = Number(amount);
     const validStatus = status && ["ACTIVE", "INACTIVE"].includes(String(status).toUpperCase()) ? String(status).toUpperCase() : "ACTIVE";
 
-    const pkg = await prisma.package.create({
-      data: {
-        name:         String(name).trim(),
-        title:        title ? String(title).trim() : null,
-        subtitle:     subtitle ? String(subtitle).trim() : null,
-        credits:      numCredits,
-        amount:       numAmount,
-        price:        Math.round(numAmount),
-        status:       validStatus,
-        description:  description ? String(description).trim() : null,
-        validityDays: validDays,
-      },
-    });
+    const data = {
+      id:           crypto.randomUUID(),
+      name:         String(name).trim(),
+      title:        title ? String(title).trim() : null,
+      subtitle:     subtitle ? String(subtitle).trim() : null,
+      credits:      numCredits,
+      amount:       numAmount,
+      price:        Math.round(numAmount),
+      status:       validStatus,
+      description:  description ? String(description).trim() : null,
+      validityDays: validDays,
+      googlePlayProductId: productId.value,
+    };
+
+    // Paid packages are created on Google Play first; the package is saved only if that succeeds
+    const syncToGoogle = isGooglePlaySyncEnabled() && numAmount > 0;
+    if (syncToGoogle) {
+      data.googlePlayProductId = data.googlePlayProductId || buildGooglePlayProductId(data);
+      if (await isGooglePlayProductIdTaken(data.googlePlayProductId)) {
+        return res.status(409).json({ message: GOOGLE_PLAY_PRODUCT_ID_CONFLICT });
+      }
+      await syncGooglePlayProduct(data, data.googlePlayProductId);
+    }
+
+    let pkg;
+    try {
+      pkg = await prisma.package.create({ data });
+    } catch (dbErr) {
+      if (syncToGoogle) await deactivateGooglePlayProduct(data.googlePlayProductId);
+      throw dbErr;
+    }
     res.status(201).json({ data: pkg });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    if (err instanceof GooglePlayCatalogError) return res.status(err.statusCode).json({ message: err.message });
+    if (isGooglePlayProductIdConflict(err)) return res.status(409).json({ message: GOOGLE_PLAY_PRODUCT_ID_CONFLICT });
+    res.status(500).json({ message: err.message });
+  }
 });
 
 router.put("/:id", adminAuth, async (req, res) => {
   try {
-    const { name, credits, amount, status, description, validityDays, title, subtitle } = req.body;
+    const { name, credits, amount, status, description, validityDays, title, subtitle, googlePlayProductId } = req.body;
 
     if (credits !== undefined && (credits === null || credits === "" || isNaN(Number(credits)) || !Number.isInteger(Number(credits)) || Number(credits) < 0)) {
       return res.status(400).json({ message: "Credits must be a non-negative integer" });
@@ -661,6 +411,9 @@ router.put("/:id", adminAuth, async (req, res) => {
     if (validityDays !== undefined && (validityDays === null || validityDays === "" || isNaN(Number(validityDays)) || !Number.isInteger(Number(validityDays)) || Number(validityDays) <= 0)) {
       return res.status(400).json({ message: "validityDays must be a positive integer" });
     }
+
+    const productId = googlePlayProductId !== undefined ? parseGooglePlayProductId(googlePlayProductId) : null;
+    if (productId?.error) return res.status(400).json({ message: productId.error });
 
     let validStatus = undefined;
     if (status !== undefined) {
@@ -680,7 +433,32 @@ router.put("/:id", adminAuth, async (req, res) => {
       ...(validStatus !== undefined && { status: validStatus }),
       ...(description !== undefined && { description: description ? String(description).trim() : null }),
       ...(validityDays !== undefined && { validityDays: Number(validityDays) }),
+      ...(productId && { googlePlayProductId: productId.value }),
     };
+
+    const existing = await prisma.package.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ message: "Package not found" });
+
+    if (isGooglePlaySyncEnabled()) {
+      const merged = { ...existing, ...updateData };
+
+      if (merged.amount > 0) {
+        // Keep the existing Google product unless the admin links a different one; create one if missing
+        const targetProductId = productId?.value || existing.googlePlayProductId || buildGooglePlayProductId(merged);
+        if (targetProductId !== existing.googlePlayProductId && await isGooglePlayProductIdTaken(targetProductId, existing.id)) {
+          return res.status(409).json({ message: GOOGLE_PLAY_PRODUCT_ID_CONFLICT });
+        }
+
+        await syncGooglePlayProduct(merged, targetProductId);
+        if (existing.googlePlayProductId && existing.googlePlayProductId !== targetProductId) {
+          await deactivateGooglePlayProduct(existing.googlePlayProductId);
+        }
+        updateData.googlePlayProductId = targetProductId;
+      } else if (existing.googlePlayProductId) {
+        // Package became free: stop selling it on Google Play
+        await deactivateGooglePlayProduct(existing.googlePlayProductId);
+      }
+    }
 
     const pkg = await prisma.package.update({
       where: { id: req.params.id },
@@ -688,14 +466,23 @@ router.put("/:id", adminAuth, async (req, res) => {
     });
     res.json({ data: pkg });
   } catch (err) {
+    if (err instanceof GooglePlayCatalogError) return res.status(err.statusCode).json({ message: err.message });
     if (err.code === "P2025") return res.status(404).json({ message: "Package not found" });
+    if (isGooglePlayProductIdConflict(err)) return res.status(409).json({ message: GOOGLE_PLAY_PRODUCT_ID_CONFLICT });
     res.status(500).json({ message: err.message });
   }
 });
 
 router.delete("/:id", adminAuth, async (req, res) => {
   try {
-    await prisma.package.delete({ where: { id: req.params.id } });
+    // SOFT delete — kept in DB so old transactions keep their package; hidden from app & admin
+    const existing = await prisma.package.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ message: "Package not found" });
+    const pkg = await prisma.package.update({ where: { id: existing.id }, data: { isDeleted: true } });
+    // Google Play product IDs can never be deleted and reused, so the product is only deactivated
+    if (isGooglePlaySyncEnabled() && pkg.googlePlayProductId) {
+      await deactivateGooglePlayProduct(pkg.googlePlayProductId);
+    }
     res.json({ data: null });
   } catch (err) {
     if (err.code === "P2025") return res.status(404).json({ message: "Package not found" });

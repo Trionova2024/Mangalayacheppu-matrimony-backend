@@ -1,6 +1,7 @@
 // callLogs.js
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { LIVE_USER } = require("../utils/softDelete");
 const adminAuth = require("../middleware/adminAuth");
 
 function getDateRange(period, startDate, endDate, from, to) {
@@ -52,7 +53,8 @@ router.get("/", adminAuth, async (req, res) => {
     const { period, range, filter, startDate, endDate, from, to } = req.query;
 
     const dateFilter = getDateRange(period || range || filter, startDate, endDate, from, to);
-    const where = dateFilter ? { createdAt: dateFilter } : {};
+    // Hide logs involving soft-deleted users
+    const where = { locker: LIVE_USER, viewed: LIVE_USER, ...(dateFilter && { createdAt: dateFilter }) };
 
     const [total, logs] = await Promise.all([
       prisma.callLog.count({ where }),

@@ -1,5 +1,6 @@
 const router    = require("express").Router();
 const prisma    = require("../lib/prisma");
+const { VISIBLE_TRANSACTION } = require("../utils/softDelete");
 const adminAuth = require("../middleware/adminAuth");
 const { getAgeFromDob } = require("../utils/age");
 
@@ -129,7 +130,7 @@ router.get("/data", adminAuth, async (req, res) => {
       }
 
       case "Transaction Report": {
-        const where = {};
+        const where = { ...VISIBLE_TRANSACTION };
         if (status) where.status = String(status).toUpperCase();
         const payMethod = paymentMethod || method;
         if (payMethod) where.paymentMethod = String(payMethod).toUpperCase();
@@ -160,6 +161,7 @@ router.get("/data", adminAuth, async (req, res) => {
 
       case "Paid Users": {
         const where = {
+          ...VISIBLE_TRANSACTION,
           status: status ? String(status).toUpperCase() : "COMPLETED",
         };
         const payMethod = paymentMethod || method;

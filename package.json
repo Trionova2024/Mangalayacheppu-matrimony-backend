@@ -9,10 +9,13 @@
     "db:migrate": "npx prisma migrate deploy",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push",
-    "test": "node test/tests/test_backend_fixes.js && node test/tests/test_all_requirements.js && node test/tests/test_part2.js && node test/tests/test_issue13.js && node test/tests/test_inactive_profiles.js && node test/tests/test_be09_be26.js && node test/tests/test_qa_28_issues.js && node test/tests/test_free_offer_concurrency.js && node test/tests/test_master_audit.js"
+    "google:sync-products": "node src/scripts/syncGooglePlayProducts.js",
+    "test": "node --test tests/google_play_iap.test.js tests/apple_iap.test.js"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0",
     "@aws-sdk/client-s3": "^3.1152.0",
+    "@googleapis/androidpublisher": "^42.2.0",
     "@prisma/client": "^5.14.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

@@ -22,7 +22,10 @@ router.get("/dashboard", userAuth, async (req, res) => {
         id:         { notIn: excludedIds },
         isVerified: true,
         status:     "ACTIVE",
-        personal:   { isNot: null },
+        // Honour ?gender= like /profiles does; otherwise just require a personal profile
+        personal: req.query.gender
+          ? { is: { gender: { equals: String(req.query.gender).trim(), mode: "insensitive" } } }
+          : { isNot: null },
       },
       orderBy: { createdAt: "desc" },
       take:    10,
@@ -39,6 +42,9 @@ router.get("/dashboard", userAuth, async (req, res) => {
       data: {
         userName:         user.personal?.fullName || user.name,
         freeContactsLeft: user.freeContactsLeft,
+        credits:          user.credits || 0,                                   // purchased credits
+        purchasedCredits: user.credits || 0,
+        totalCredits:     (user.freeContactsLeft || 0) + (user.credits || 0),
         featuredProfiles: featured.map(formatCard),
       },
     });

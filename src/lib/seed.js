@@ -9,7 +9,7 @@ async function main() {
   // ── App Config ─────────────────────────────────────────────────────────────
   await prisma.appConfig.upsert({
     where: { id: "singleton" }, update: {},
-    create: { id: "singleton", defaultCredits: 3, validityMonths: 3, razorpayKeyId: process.env.RAZORPAY_KEY_ID || "", razorpaySecret: process.env.RAZORPAY_KEY_SECRET || "" },
+    create: { id: "singleton", defaultCredits: 3, validityMonths: 3 },
   });
   console.log("✅  App config");
 
@@ -52,7 +52,9 @@ async function main() {
 
   const users = [];
   for (const u of usersData) {
-    const user = await prisma.user.upsert({ where: { mobile: u.mobile }, update: {}, create: { ...u, isProfileComplete: u.isVerified } });
+    // (no upsert: mobile is a partial unique index, ON CONFLICT can't target it)
+    const user = await prisma.user.findFirst({ where: { mobile: u.mobile, isDeleted: false } })
+              || await prisma.user.create({ data: { ...u, isProfileComplete: u.isVerified } });
     users.push(user);
   }
   console.log(`✅  Users: ${users.length} seeded`);
@@ -87,7 +89,7 @@ async function main() {
   for (let i = 0; i < 3; i++) {
     const pkg = pkgs[i % pkgs.length];
     await prisma.transaction.create({
-      data: { userId: users[i].id, packageId: pkg.id, amount: pkg.amount, paymentMethod: "RAZORPAY", status: "COMPLETED" },
+      data: { userId: users[i].id, packageId: pkg.id, amount: pkg.amount, paymentMethod: "GOOGLE_PLAY", status: "COMPLETED" },
     });
   }
   console.log("✅  Transactions: 3 seeded");

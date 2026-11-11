@@ -6,6 +6,7 @@ const prisma   = require("../lib/prisma");
 const userAuth = require("../middleware/userAuth");
 const { validateAndCalculateAge, getAgeFromDob } = require("../utils/age");
 const { uploadToS3, deleteFromS3 } = require("../lib/s3");
+const { softDeleteUser } = require("../services/userDeletionService");
 
 // ── Horoscope upload setup ─────────────────────────────────────────────────────
 // Extension is derived from the MIME type allow-list, never from the client's
@@ -108,6 +109,16 @@ router.get("/me", userAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// ── DELETE /api/profile/me  — Flutter: user deletes own account (SOFT delete) ──
+// Sets isDeleted = true. Row is kept (transactions, logs, reports stay); user is hidden everywhere.
+router.delete("/me", userAuth, async (req, res) => {
+  try {
+    const deleted = await softDeleteUser(req.user.id);
+    if (!deleted) return res.status(404).json({ message: "User not found" });
+    res.json({ success: true, message: "Your account has been deleted" });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 // ── GET /api/profile/interests  — Flutter: profiles liked (swiped RIGHT) ──────
 // MUST be defined BEFORE /:id to avoid Express capturing "interests" as an id param
 router.get("/interests", userAuth, async (req, res) => {
@@ -119,6 +130,7 @@ router.get("/interests", userAuth, async (req, res) => {
         target: {
           status:     "ACTIVE",
           isVerified: true,
+          isDeleted:  false,
         },
       },
       orderBy: { createdAt: "desc" },
@@ -467,7 +479,7 @@ router.post("/:id/unlock-contact", userAuth, async (req, res) => {
         });
 
         const txn = await tx.transaction.findFirst({
-          where: { userId: viewerId, status: "COMPLETED" },
+          where: { userId: viewerId, status: "COMPLETED", isDeleted: false },
           include: { package: true },
           orderBy: { createdAt: "desc" },
         });
@@ -570,6 +582,9 @@ function formatProfile(user, { showHoroscope = false } = {}) {
     isVerified:       user.isVerified,
     isProfileComplete: user.isProfileComplete,
     freeContactsLeft: user.freeContactsLeft,
+    credits:          user.credits || 0,                                   // purchased credits
+    purchasedCredits: user.credits || 0,
+    totalCredits:     (user.freeContactsLeft || 0) + (user.credits || 0),
     status:           user.status,
     personal:         user.personal     ? formatPersonal(user.personal, showHoroscope) : null,
     family:           user.family       ? user.family                       : null,

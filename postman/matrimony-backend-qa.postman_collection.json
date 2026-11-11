@@ -2316,6 +2316,44 @@
       "description": "Payment failure/cancel handling (Issue #7 fix), explicit FAILED status without undefined, and signature verification.",
       "item": [
         {
+          "name": "00. Get Payment Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "config"
+              ]
+            },
+            "description": "Returns the active payment provider (IAP) and platform flags (isGooglePlay, isAppleIap)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Payment configuration returned', function () {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.have.property('provider');",
+                  "    pm.expect(jsonData.data).to.have.property('isIap');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "01. Get packages",
           "request": {
             "method": "GET",
@@ -2361,7 +2399,7 @@
           ]
         },
         {
-          "name": "02. Payment cancel",
+          "name": "02. Google Play - Verify Purchase",
           "request": {
             "method": "POST",
             "header": [
@@ -2377,20 +2415,83 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/packages/cancel",
+              "raw": "{{baseUrl}}/api/payments/google-play/verify",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "packages",
-                "cancel"
+                "payments",
+                "google-play",
+                "verify"
               ]
             },
-            "description": "Tests Issue #7: Payment cancellation returns explicit FAILED status and no undefined.",
+            "description": "Authoritatively verifies Google Play purchase token with Google Android Publisher API v3 and allocates credits.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "raw": "{\n  \"productId\": \"{{googlePlayProductId}}\",\n  \"purchaseToken\": \"{{googlePlayPurchaseToken}}\",\n  \"packageName\": \"com.trionova.matrimony\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Google Play purchase verified & credited', function () {",
+                  "        pm.expect(jsonData.success).to.eql(true);",
+                  "        pm.expect(jsonData.status).to.eql('COMPLETED');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Controlled client error returned', function () {",
+                  "        pm.expect([400, 404, 409, 502]).to.include(pm.response.code);",
+                  "        pm.expect(jsonData.success).to.eql(false);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03. Google Play - Report Failed / Cancelled Purchase",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{userToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/google-play/failed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "google-play",
+                "failed"
+              ]
+            },
+            "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2407,20 +2508,69 @@
                   "pm.test('Status code is 200', function () {",
                   "    pm.response.to.have.status(200);",
                   "});",
-                  "pm.test('Explicit status FAILED returned (Issue #7 fix)', function () {",
-                  "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData.status).to.eql('FAILED');",
-                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
-                  "    pm.expect(jsonData.status).to.not.be.undefined;",
-                  "    pm.expect(jsonData.message).to.be.a('string');",
+                  "pm.test('Failure is recorded (or purchase already completed)', function () {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.expect(['FAILED', 'COMPLETED']).to.include(jsonData.status);",
                   "});"
                 ]
               }
             }
+          ],
+          "response": [
+            {
+              "name": "200 - Cancelled by user",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{userToken}}",
+                    "type": "text"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json",
+                    "type": "text"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/payments/google-play/failed",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "payments",
+                    "google-play",
+                    "failed"
+                  ]
+                },
+                "description": "Call when the Google Play purchase did NOT succeed on the device (user closed the payment sheet, card declined, billing unavailable, ...). Records a FAILED transaction for the admin panel; no credits are added. reason: \"CANCELLED\" (user cancelled) or \"FAILED\" (default). purchaseToken / orderId are optional. If the purchaseToken was already verified, the report is ignored and status COMPLETED is returned.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"productId\": \"credits_bronze\",\n  \"reason\": \"CANCELLED\",\n  \"errorCode\": \"USER_CANCELED\",\n  \"errorMessage\": \"User closed the Google Play payment sheet\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"status\": \"FAILED\",\n  \"message\": \"Payment cancelled by user\",\n  \"data\": {\n    \"status\": \"FAILED\",\n    \"message\": \"Payment cancelled by user\"\n  }\n}"
+            }
           ]
         },
         {
-          "name": "03. Payment failed",
+          "name": "04. Apple IAP - Verify Purchase",
           "request": {
             "method": "POST",
             "header": [
@@ -2436,20 +2586,21 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/packages/payment-failed",
+              "raw": "{{baseUrl}}/api/payments/apple/verify",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "packages",
-                "payment-failed"
+                "payments",
+                "apple",
+                "verify"
               ]
             },
-            "description": "Tests Issue #7: Payment failure returns explicit FAILED status and no undefined.",
+            "description": "Verifies Apple StoreKit 2 signed transaction JWS or App Store base64 receipt, awards credits atomically.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"paymentId\": \"{{paymentId}}\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "raw": "{\n  \"productId\": \"{{appleProductId}}\",\n  \"signedTransaction\": \"{{appleSignedTransaction}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2463,30 +2614,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () {",
-                  "    pm.response.to.have.status(200);",
-                  "});",
-                  "pm.test('Explicit status FAILED returned (Issue #7 fix)', function () {",
-                  "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData.status).to.eql('FAILED');",
-                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
-                  "    pm.expect(jsonData.status).to.not.be.undefined;",
-                  "});"
+                  "var jsonData = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Apple purchase verified & credited', function () {",
+                  "        pm.expect(jsonData.success).to.eql(true);",
+                  "        pm.expect(jsonData.status).to.eql('COMPLETED');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('Controlled client error on test payload', function () {",
+                  "        pm.expect([400, 404, 409, 502]).to.include(pm.response.code);",
+                  "        pm.expect(jsonData.success).to.eql(false);",
+                  "    });",
+                  "}"
                 ]
               }
             }
           ]
         },
         {
-          "name": "04. Verify payment - Environment Dependent",
+          "name": "05. Apple IAP - Server Notifications Webhook",
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{userToken}}",
-                "type": "text"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json",
@@ -2494,20 +2643,21 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/packages/verify-payment",
+              "raw": "{{baseUrl}}/api/payments/apple/notifications",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "packages",
-                "verify-payment"
+                "payments",
+                "apple",
+                "notifications"
               ]
             },
-            "description": "ENVIRONMENT DEPENDENT: Verifies Razorpay payment signature. Real gateway verification requires active Razorpay test keys and valid payment signature. Do not fake Razorpay success.",
+            "description": "Apple App Store Server Notifications v2 webhook for subscription renewals, cancellations, and refunds.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"orderId\": \"{{paymentOrderId}}\",\n  \"paymentId\": \"{{paymentId}}\",\n  \"signature\": \"manual_verification_signature\",\n  \"packageId\": \"{{paidPackageId}}\"\n}",
+              "raw": "{\n  \"signedPayload\": \"sample_apple_v2_notification_jws\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2521,15 +2671,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// ENVIRONMENT DEPENDENT: Requires live Razorpay credentials and real transaction signature.",
-                  "// Do not fake Razorpay success. This negative test verifies signature mismatch is rejected.",
-                  "pm.test('Status code is 400 Bad Request on invalid signature', function () {",
-                  "    pm.response.to.have.status(400);",
-                  "});",
-                  "pm.test('Invalid signature returns explicit status FAILED', function () {",
-                  "    var jsonData = pm.response.json();",
-                  "    pm.expect(jsonData.status).to.eql('FAILED');",
-                  "    pm.expect(jsonData.data.status).to.eql('FAILED');",
+                  "// Returns 200 or 400 depending on JWS validity",
+                  "pm.test('Handled without 500 error', function () {",
+                  "    pm.expect([200, 400]).to.include(pm.response.code);",
                   "});"
                 ]
               }
