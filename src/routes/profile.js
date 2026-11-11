@@ -155,6 +155,7 @@ router.get("/interests", userAuth, async (req, res) => {
 router.post("/personal", userAuth, async (req, res) => {
   try {
     const d = req.body;
+    console.log("[profile/personal] userId:", req.user.id, "body:", JSON.stringify(d, null, 2));
 
     // Validate DOB if any DOB field is provided
     const dobDay   = d.dob?.day   !== undefined ? d.dob.day   : d.dobDay;
