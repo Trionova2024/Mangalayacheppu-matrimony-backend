@@ -573,7 +573,7 @@ router.post("/:id/swipe", userAuth, async (req, res) => {
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function formatProfile(user, { showHoroscope = false } = {}) {
+function formatProfile(user) {
   return {
     id:               user.id,
     name:             user.personal?.fullName || user.name,
@@ -586,7 +586,7 @@ function formatProfile(user, { showHoroscope = false } = {}) {
     purchasedCredits: user.credits || 0,
     totalCredits:     (user.freeContactsLeft || 0) + (user.credits || 0),
     status:           user.status,
-    personal:         user.personal     ? formatPersonal(user.personal, showHoroscope) : null,
+    personal:         user.personal     ? formatPersonal(user.personal) : null,
     family:           user.family       ? user.family                       : null,
     professional:     user.professional ? user.professional                 : null,
     physical:         user.physical     ? user.physical                     : null,
@@ -594,7 +594,7 @@ function formatProfile(user, { showHoroscope = false } = {}) {
   };
 }
 
-function formatPersonal(p, showHoroscope = false) {
+function formatPersonal(p) {
   const age = getAgeFromDob(p.dobDay, p.dobMonth, p.dobYear, p.age);
   return {
     fullName:         p.fullName,
@@ -609,7 +609,7 @@ function formatPersonal(p, showHoroscope = false) {
     native:           p.native,
     aboutMe:          p.aboutMe,
     interests:        p.interests,
-    horoscopeUrl:     showHoroscope ? (p.horoscopeUrl || null) : null,
+    horoscopeUrl:     p.horoscopeUrl || null,
     updatedAt:        p.updatedAt,
   };
 }
