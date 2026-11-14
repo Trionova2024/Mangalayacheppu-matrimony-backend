@@ -1,7 +1,7 @@
 const router   = require("express").Router();
 const prisma   = require("../lib/prisma");
 const userAuth = require("../middleware/userAuth");
-const { getExcludedProfileIds } = require("../utils/swipe");
+const { getExcludedProfileIds, getSwipeStatusForFeed } = require("../utils/swipe");
 const { getAgeFromDob } = require("../utils/age");
 
 // ── GET /api/home/dashboard ────────────────────────────────────────────────────
@@ -13,10 +13,17 @@ router.get("/dashboard", userAuth, async (req, res) => {
       include: { personal: true },
     });
 
-    // Exclude current user and any swiped profiles (LEFT and RIGHT)
-    const excludedIds = await getExcludedProfileIds(req.user.id);
+    // Bookmarks by current user (to set isBookmarked flag)
+    const bookmarks = await prisma.bookmark.findMany({
+      where:  { ownerId: req.user.id },
+      select: { targetId: true },
+    });
+    const bookmarkedIds = new Set(bookmarks.map(b => b.targetId));
 
-    // Featured = recently joined verified users not swiped or owned by current user
+    // Exclude current user and RIGHT-swiped profiles; keep LEFT-swiped to flag with isAlreadyRejected: true
+    const { excludedIds, leftSwipedIds } = await getSwipeStatusForFeed(req.user.id);
+
+    // Featured = recently joined verified users not right-swiped or owned by current user
     const featured = await prisma.user.findMany({
       where: {
         id:         { notIn: excludedIds },
@@ -45,7 +52,11 @@ router.get("/dashboard", userAuth, async (req, res) => {
         credits:          user.credits || 0,                                   // purchased credits
         purchasedCredits: user.credits || 0,
         totalCredits:     (user.freeContactsLeft || 0) + (user.credits || 0),
-        featuredProfiles: featured.map(formatCard),
+        featuredProfiles: featured.map(p => ({
+          ...formatCard(p),
+          isBookmarked:      bookmarkedIds.has(p.id),
+          isAlreadyRejected: leftSwipedIds.has(p.id),
+        })),
       },
     });
   } catch (err) { res.status(500).json({ message: err.message }); }
@@ -188,9 +199,10 @@ function formatCard(user) {
     religion:     p?.religion || null,
     caste:        p?.caste || null,
     education:    prof?.highestEducation || null,
-    occupation:   prof?.occupationType || prof?.jobTitle || null,
-    height:       phys?.height || null,
-    isBookmarked: false,
+    occupation:        prof?.occupationType || prof?.jobTitle || null,
+    height:            phys?.height || null,
+    isBookmarked:      false,
+    isAlreadyRejected: false,
   };
 }
 

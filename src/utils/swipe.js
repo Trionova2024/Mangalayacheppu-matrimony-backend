@@ -17,6 +17,42 @@ async function getExcludedProfileIds(userId, prismaClient = prisma) {
   return [userId, ...swipedTargetIds];
 }
 
+/**
+ * Returns swipe categorization for feeds where left-swiped (rejected) profiles
+ * should still appear with an identification flag `isAlreadyRejected: true`.
+ * Excludes: current user + RIGHT-swiped (liked) profiles.
+ * @param {string} userId
+ * @param {object} [prismaClient=prisma]
+ * @returns {Promise<{ excludedIds: string[], rightSwipedIds: string[], leftSwipedIds: Set<string> }>}
+ */
+async function getSwipeStatusForFeed(userId, prismaClient = prisma) {
+  if (!userId) {
+    return { excludedIds: [], rightSwipedIds: [], leftSwipedIds: new Set() };
+  }
+  const swipes = await prismaClient.swipe.findMany({
+    where: { ownerId: userId },
+    select: { targetId: true, direction: true },
+  });
+
+  const rightSwipedIds = [];
+  const leftSwipedIds = new Set();
+
+  for (const s of swipes) {
+    if (s.direction === "RIGHT") {
+      rightSwipedIds.push(s.targetId);
+    } else if (s.direction === "LEFT") {
+      leftSwipedIds.add(s.targetId);
+    }
+  }
+
+  return {
+    excludedIds: [userId, ...rightSwipedIds],
+    rightSwipedIds,
+    leftSwipedIds,
+  };
+}
+
 module.exports = {
   getExcludedProfileIds,
+  getSwipeStatusForFeed,
 };
